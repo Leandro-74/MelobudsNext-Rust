@@ -21,8 +21,9 @@ use tokio::time::Instant;
 use uuid::Uuid;
 
 use crate::config::BleUuids;
+use crate::hex;
 use crate::protocol::commands;
-use crate::protocol::framing::{self, Packet};
+use crate::protocol::framing::Packet;
 use crate::protocol::opcode::Opcode;
 use crate::protocol::readings::{Battery, FirmwareVersion};
 use crate::protocol::touch::TouchMapping;
@@ -33,8 +34,31 @@ const SCAN_POLL_INTERVAL: Duration = Duration::from_millis(250);
 const QUERY_INTERVAL: Duration = Duration::from_millis(50);
 const NOTIFICATION_SETTLE: Duration = Duration::from_millis(150);
 
+/// Opcodes queried after connecting, in the order used by the reference
+/// implementation.
+const QUERY_TARGETS: [Opcode; 8] = [
+    Opcode::Anc,
+    Opcode::GameMode,
+    Opcode::SleepMode,
+    Opcode::Rename,
+    Opcode::ChannelBalance,
+    Opcode::NotificationVolume,
+    Opcode::Ldac,
+    Opcode::WearDetection,
+];
+
 /// Notifications produced by the command characteristic.
 pub type NotificationStream = Pin<Box<dyn Stream<Item = ValueNotification> + Send>>;
+
+/// Result of a state synchronisation.
+///
+/// Optional direct reads (battery, firmware, touch) no longer abort the whole
+/// sync; their failures are reported as warnings instead.
+#[derive(Debug, Default)]
+pub struct SyncReport {
+    pub state: DeviceState,
+    pub warnings: Vec<String>,
+}
 
 /// A device found during a scan.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -50,6 +74,7 @@ pub struct DiscoveredDevice {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GattCharacteristicInfo {
     pub uuid: Uuid,
+    pub service_uuid: Uuid,
     pub properties: String,
 }
 
@@ -105,6 +130,16 @@ pub async fn scan(timeout: Duration) -> Result<Vec<DiscoveredDevice>> {
 /// An open BLE session bound to the Melobuds command channel.
 pub struct BleSession {
     peripheral: Peripheral,
+    uuids: UuidSet,
+    command: Characteristic,
+    notification: Characteristic,
+    battery: Option<Characteristic>,
+    firmware: Option<Characteristic>,
+    touch: Option<Characteristic>,
+}
+
+/// Characteristics resolved for a connected device.
+struct Resolved {
     command: Characteristic,
     notification: Characteristic,
     battery: Option<Characteristic>,
@@ -120,43 +155,88 @@ impl BleSession {
         ensure_powered(&adapter).await?;
 
         let peripheral = find_peripheral(&adapter, address, scan_timeout).await?;
+        Self::open(peripheral, UuidSet::from_config(uuids)?).await
+    }
 
-        if !peripheral
-            .is_connected()
-            .await
-            .context("failed to query connection state")?
-        {
-            peripheral
-                .connect_with_timeout(CONNECT_TIMEOUT)
+    async fn open(peripheral: Peripheral, uuids: UuidSet) -> Result<Self> {
+        let resolved = async {
+            if !peripheral
+                .is_connected()
                 .await
-                .with_context(|| format!("failed to connect to {address}"))?;
+                .context("failed to query connection state")?
+            {
+                peripheral
+                    .connect_with_timeout(CONNECT_TIMEOUT)
+                    .await
+                    .with_context(|| format!("failed to connect to {}", peripheral.address()))?;
+            }
+
+            peripheral
+                .discover_services()
+                .await
+                .context("failed to discover GATT services")?;
+
+            resolve(&peripheral, &uuids)
+        }
+        .await;
+
+        match resolved {
+            Ok(resolved) => Ok(Self {
+                peripheral,
+                uuids,
+                command: resolved.command,
+                notification: resolved.notification,
+                battery: resolved.battery,
+                firmware: resolved.firmware,
+                touch: resolved.touch,
+            }),
+            Err(error) => {
+                let _ = peripheral.disconnect().await;
+                Err(error)
+            }
+        }
+    }
+
+    /// Reconnects after a link drop (for example when LDAC restarts the
+    /// headphones). Services and characteristics are rediscovered.
+    pub async fn reconnect(&mut self, attempts: u32, delay: Duration) -> Result<()> {
+        let _ = self.peripheral.disconnect().await;
+        let mut last_error = None;
+
+        for attempt in 1..=attempts.max(1) {
+            tokio::time::sleep(delay).await;
+
+            match self.peripheral.connect_with_timeout(CONNECT_TIMEOUT).await {
+                Ok(()) => match self.refresh().await {
+                    Ok(()) => return Ok(()),
+                    Err(error) => {
+                        let _ = self.peripheral.disconnect().await;
+                        last_error = Some(error.context(format!("reconnect attempt {attempt}")));
+                    }
+                },
+                Err(error) => {
+                    last_error = Some(
+                        anyhow::Error::new(error).context(format!("reconnect attempt {attempt}")),
+                    );
+                }
+            }
         }
 
-        peripheral
+        Err(last_error.unwrap_or_else(|| anyhow!("failed to reconnect")))
+    }
+
+    async fn refresh(&mut self) -> Result<()> {
+        self.peripheral
             .discover_services()
             .await
-            .context("failed to discover GATT services")?;
-
-        let uuids = UuidSet::from_config(uuids)?;
-        let services = peripheral.services();
-
-        if !services.iter().any(|service| service.uuid == uuids.service) {
-            bail!("service {} not found on device {address}", uuids.service);
-        }
-
-        let characteristics = peripheral.characteristics();
-        let command = find_characteristic(&characteristics, uuids.command_write, "command write")?;
-        let notification =
-            find_characteristic(&characteristics, uuids.notification, "notification")?;
-
-        Ok(Self {
-            battery: find_optional_characteristic(&characteristics, uuids.battery),
-            firmware: find_optional_characteristic(&characteristics, uuids.firmware),
-            touch: find_optional_characteristic(&characteristics, uuids.touch),
-            peripheral,
-            command,
-            notification,
-        })
+            .context("failed to rediscover GATT services")?;
+        let resolved = resolve(&self.peripheral, &self.uuids)?;
+        self.command = resolved.command;
+        self.notification = resolved.notification;
+        self.battery = resolved.battery;
+        self.firmware = resolved.firmware;
+        self.touch = resolved.touch;
+        Ok(())
     }
 
     pub fn address(&self) -> String {
@@ -181,6 +261,7 @@ impl BleSession {
             .into_iter()
             .map(|characteristic| GattCharacteristicInfo {
                 uuid: characteristic.uuid,
+                service_uuid: characteristic.service_uuid,
                 properties: format_properties(characteristic.properties),
             })
             .collect()
@@ -282,47 +363,96 @@ impl BleSession {
 
     /// Reads the direct characteristics, queries the remaining state and waits
     /// for the responses.
-    pub async fn sync(&self, listen: Duration) -> Result<DeviceState> {
-        let mut state = DeviceState::default();
+    ///
+    /// Optional reads are best-effort: a missing or unreadable characteristic
+    /// becomes a warning in [`SyncReport`] instead of aborting the sync. State
+    /// queries are interleaved with notification polling so responses are not
+    /// lost while the next query is being written.
+    pub async fn sync(&self, listen: Duration) -> Result<SyncReport> {
+        let mut report = SyncReport::default();
 
         if self.battery.is_some() {
-            state.set_battery(self.read_battery().await?);
+            match self.read_battery().await {
+                Ok(battery) => report.state.set_battery(battery),
+                Err(error) => report.warnings.push(format!("battery: {error:#}")),
+            }
         }
         if self.firmware.is_some() {
-            state.set_firmware(self.read_firmware().await?);
+            match self.read_firmware().await {
+                Ok(firmware) => report.state.set_firmware(firmware),
+                Err(error) => report.warnings.push(format!("firmware: {error:#}")),
+            }
         }
         if self.touch.is_some() {
-            state.set_touch(self.read_touch().await?);
+            match self.read_touch().await {
+                Ok(touch) => report.state.set_touch(touch),
+                Err(error) => report.warnings.push(format!("touch: {error:#}")),
+            }
         }
 
         let mut notifications = self.subscribe_commands().await?;
-        self.query_all().await?;
-        for value in self.receive_values(&mut notifications, listen).await {
-            apply_value(&mut state, &value);
+        let deadline = Instant::now() + listen;
+        let mut targets = QUERY_TARGETS.into_iter();
+        let mut next_query = Instant::now();
+
+        while Instant::now() < deadline {
+            let wake = next_query.min(deadline);
+
+            tokio::select! {
+                _ = tokio::time::sleep_until(wake) => {
+                    if next_query > Instant::now() {
+                        continue;
+                    }
+
+                    match targets.next() {
+                        Some(target) => {
+                            if let Err(error) = self.write_command(&commands::query(target)).await {
+                                report.warnings.push(format!(
+                                    "query 0x{:02X}: {error:#}",
+                                    target.as_u8()
+                                ));
+                                break;
+                            }
+                            next_query = Instant::now() + QUERY_INTERVAL;
+                        }
+                        None => next_query = deadline,
+                    }
+                }
+                item = notifications.next() => {
+                    let Some(notification) = item else {
+                        break;
+                    };
+                    if notification.uuid != self.notification.uuid {
+                        continue;
+                    }
+                    if let Err(error) = report.state.apply_bytes(&notification.value) {
+                        report.warnings.push(format!(
+                            "notification {}: {error}",
+                            hex::format(&notification.value)
+                        ));
+                    }
+                }
+            }
         }
 
-        Ok(state)
+        Ok(report)
     }
 
     /// Sends the initial `0xFE` queries in the documented order.
     pub async fn query_all(&self) -> Result<()> {
-        const TARGETS: [Opcode; 8] = [
-            Opcode::Anc,
-            Opcode::GameMode,
-            Opcode::SleepMode,
-            Opcode::Rename,
-            Opcode::ChannelBalance,
-            Opcode::NotificationVolume,
-            Opcode::Ldac,
-            Opcode::WearDetection,
-        ];
-
-        for target in TARGETS {
+        for target in QUERY_TARGETS {
             self.write_command(&commands::query(target)).await?;
             tokio::time::sleep(QUERY_INTERVAL).await;
         }
 
         Ok(())
+    }
+
+    /// Writes a packet and collects the notifications it triggers.
+    pub async fn exchange(&self, packet: &Packet, listen: Duration) -> Result<Vec<Vec<u8>>> {
+        let mut notifications = self.subscribe_commands().await?;
+        self.write_command(packet).await?;
+        Ok(self.receive_values(&mut notifications, listen).await)
     }
 
     /// Collects command notifications for a bounded amount of time.
@@ -365,12 +495,31 @@ impl BleSession {
     }
 }
 
-fn apply_value(state: &mut DeviceState, value: &[u8]) {
-    if let Ok(packets) = framing::parse(value) {
-        for packet in &packets {
-            state.apply(packet);
-        }
-    }
+fn resolve(peripheral: &Peripheral, uuids: &UuidSet) -> Result<Resolved> {
+    // The device exposes the command/notification UUIDs in more than one
+    // service. Resolve them inside the configured service, like the reference
+    // implementation does, otherwise the wrong characteristic may be selected.
+    let services = peripheral.services();
+    let service = services
+        .iter()
+        .find(|service| service.uuid == uuids.service)
+        .ok_or_else(|| {
+            anyhow!(
+                "service {} not found on device {}",
+                uuids.service,
+                peripheral.address()
+            )
+        })?;
+
+    let characteristics = &service.characteristics;
+
+    Ok(Resolved {
+        command: find_characteristic(characteristics, uuids.command_write, "command write")?,
+        notification: find_characteristic(characteristics, uuids.notification, "notification")?,
+        battery: find_optional_characteristic(characteristics, uuids.battery),
+        firmware: find_optional_characteristic(characteristics, uuids.firmware),
+        touch: find_optional_characteristic(characteristics, uuids.touch),
+    })
 }
 
 async fn first_adapter() -> Result<Adapter> {

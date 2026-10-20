@@ -139,11 +139,7 @@ enum BuildCommand {
 
 #[derive(Debug, Args)]
 struct AncArgs {
-    /// ANC mode to encode.
-    #[arg(value_enum)]
-    mode: AncModeArg,
-
-    /// ANC scene; required when mode is `anc`.
+    /// ANC scene; omit every option to turn ANC and transparency off.
     #[arg(long, value_enum)]
     scene: Option<SceneArg>,
 
@@ -216,6 +212,26 @@ enum ConfigCommand {
     },
 }
 
+#[derive(Debug, Args)]
+struct ActionArgs {
+    /// Seconds to wait for command echoes (0 disables listening).
+    #[arg(long, default_value_t = 1.0)]
+    wait: f64,
+
+    /// Print the resulting state as JSON.
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Debug, Args)]
+struct DeviceAncArgs {
+    #[command(flatten)]
+    anc: AncArgs,
+
+    #[command(flatten)]
+    action: ActionArgs,
+}
+
 #[derive(Debug, Subcommand)]
 enum DeviceCommand {
     /// Scan for nearby BLE devices.
@@ -226,9 +242,11 @@ enum DeviceCommand {
     },
 
     /// Connect, read the direct characteristics and sync the queryable state.
+    ///
+    /// This is the quickest way to test the initial BLE communication.
     Info {
         /// Seconds to wait for query responses.
-        #[arg(long, default_value_t = 1.0)]
+        #[arg(long, default_value_t = 1.5)]
         wait: f64,
 
         /// Print the state as JSON.
@@ -249,6 +267,10 @@ enum DeviceCommand {
         /// Use write-with-response instead of write-without-response.
         #[arg(long)]
         with_response: bool,
+
+        /// Print the resulting state as JSON.
+        #[arg(long)]
+        json: bool,
     },
 
     /// Subscribe to notifications and print them until Ctrl+C.
@@ -268,6 +290,98 @@ enum DeviceCommand {
         /// Binding in the form KEY=FUNCTION, for example `left-single=play-pause`.
         #[arg(long = "bind", value_name = "KEY=FUNCTION")]
         bindings: Vec<String>,
+    },
+
+    /// Set ANC or transparency (opcode 0x17).
+    ///
+    /// Without options it turns ANC off. Examples:
+    ///   device anc --scene indoor --level 2
+    ///   device anc --scene wind
+    ///   device anc --intensity 4
+    ///   device anc --voice
+    Anc(DeviceAncArgs),
+
+    /// Enable or disable Game Mode (opcode 0x09).
+    Game {
+        #[arg(value_enum)]
+        state: OnOff,
+
+        #[command(flatten)]
+        action: ActionArgs,
+    },
+
+    /// Enable or disable Sleep Mode (opcode 0x10).
+    Sleep {
+        #[arg(value_enum)]
+        state: OnOff,
+
+        #[command(flatten)]
+        action: ActionArgs,
+    },
+
+    /// Enable or disable LDAC (opcode 0x23); reconnects afterwards.
+    Ldac {
+        #[arg(value_enum)]
+        state: OnOff,
+
+        #[command(flatten)]
+        action: ActionArgs,
+    },
+
+    /// Rename the device (opcode 0x18, maximum 32 UTF-8 bytes).
+    Rename {
+        name: String,
+
+        #[command(flatten)]
+        action: ActionArgs,
+    },
+
+    /// Set the channel balance (opcode 0x16).
+    Balance {
+        /// Balance from 0 (left) to 100 (right); 50 is centered.
+        value: u8,
+
+        #[command(flatten)]
+        action: ActionArgs,
+    },
+
+    /// Set the notification volume (opcode 0x1D).
+    Volume {
+        #[arg(value_enum)]
+        level: VolumeArg,
+
+        #[command(flatten)]
+        action: ActionArgs,
+    },
+
+    /// Configure wear detection (opcode 0x2C).
+    Wear {
+        #[arg(value_enum)]
+        state: OnOff,
+
+        /// Warning music index (defaults to 1).
+        #[arg(long, default_value_t = 1)]
+        music_index: u8,
+
+        /// Keep ANC enabled when the earbuds are removed.
+        #[arg(long)]
+        keep_anc: bool,
+
+        /// Tone value (defaults to 0).
+        #[arg(long, default_value_t = 0)]
+        tone: u8,
+
+        #[command(flatten)]
+        action: ActionArgs,
+    },
+
+    /// Query an opcode (0xFE) and print the response.
+    Query {
+        /// Opcode name (for example `anc`) or hexadecimal value (for example `0x17`).
+        opcode: String,
+
+        #[command(flatten)]
+        action: ActionArgs,
     },
 }
 
@@ -307,13 +421,6 @@ impl From<VolumeArg> for NotificationVolume {
             VolumeArg::Max => Self::Max,
         }
     }
-}
-
-#[derive(Debug, Clone, Copy, ValueEnum)]
-enum AncModeArg {
-    Off,
-    Anc,
-    Transparency,
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -382,14 +489,15 @@ async fn run_device(
         DeviceCommand::Info { wait, json } => {
             let wait = wait_duration(wait)?;
             let session = open_session(address, config_path, scan_timeout).await?;
-            println!("Device: {}", session.address());
+            let report = session.sync(wait).await?;
+            print_warnings(&report.warnings);
 
-            let state = session.sync(wait).await?;
             if json {
-                println!("{}", serde_json::to_string_pretty(&state)?);
+                eprintln!("Device: {}", session.address());
             } else {
-                println!("{state}");
+                println!("Device: {}", session.address());
             }
+            print_state(&report.state, json)?;
 
             close(session).await;
             Ok(())
@@ -398,12 +506,14 @@ async fn run_device(
             data,
             wait,
             with_response,
+            json,
         } => {
             let wait = wait_duration(wait)?;
             send_raw(
                 &join_hex(&data)?,
                 wait,
                 with_response,
+                json,
                 address,
                 config_path,
                 scan_timeout,
@@ -418,7 +528,192 @@ async fn run_device(
         DeviceCommand::WriteTouch { bindings } => {
             write_touch(&bindings, address, config_path, scan_timeout).await
         }
+        DeviceCommand::Anc(args) => {
+            let mode = build_anc_mode(&args.anc)?;
+            run_action(
+                commands::anc(mode),
+                &args.action,
+                false,
+                address,
+                config_path,
+                scan_timeout,
+            )
+            .await
+        }
+        DeviceCommand::Game { state, action } => {
+            run_action(
+                commands::game_mode(state.enabled()),
+                &action,
+                false,
+                address,
+                config_path,
+                scan_timeout,
+            )
+            .await
+        }
+        DeviceCommand::Sleep { state, action } => {
+            run_action(
+                commands::sleep_mode(state.enabled()),
+                &action,
+                false,
+                address,
+                config_path,
+                scan_timeout,
+            )
+            .await
+        }
+        DeviceCommand::Ldac { state, action } => {
+            run_action(
+                commands::ldac(state.enabled()),
+                &action,
+                true,
+                address,
+                config_path,
+                scan_timeout,
+            )
+            .await
+        }
+        DeviceCommand::Rename { name, action } => {
+            run_action(
+                commands::rename(&name)?,
+                &action,
+                false,
+                address,
+                config_path,
+                scan_timeout,
+            )
+            .await
+        }
+        DeviceCommand::Balance { value, action } => {
+            run_action(
+                commands::channel_balance(value),
+                &action,
+                false,
+                address,
+                config_path,
+                scan_timeout,
+            )
+            .await
+        }
+        DeviceCommand::Volume { level, action } => {
+            run_action(
+                commands::notification_volume(level.into()),
+                &action,
+                false,
+                address,
+                config_path,
+                scan_timeout,
+            )
+            .await
+        }
+        DeviceCommand::Wear {
+            state,
+            music_index,
+            keep_anc,
+            tone,
+            action,
+        } => {
+            run_action(
+                commands::wear_detection(WearDetection {
+                    enabled: state.enabled(),
+                    music_index,
+                    keep_anc,
+                    tone,
+                }),
+                &action,
+                false,
+                address,
+                config_path,
+                scan_timeout,
+            )
+            .await
+        }
+        DeviceCommand::Query { opcode, action } => {
+            let opcode = parse_opcode(&opcode)?;
+            run_action(
+                commands::query(opcode),
+                &action,
+                false,
+                address,
+                config_path,
+                scan_timeout,
+            )
+            .await
+        }
     }
+}
+
+const SYNC_WINDOW: Duration = Duration::from_millis(1500);
+const RECONNECT_ATTEMPTS: u32 = 10;
+const RECONNECT_DELAY: Duration = Duration::from_secs(3);
+
+/// Runs a command, applies its echoes to the live state and prints the result.
+///
+/// A sync is performed first so the output contains battery, firmware and the
+/// other queried fields, not only the packet that was just echoed.
+async fn run_action(
+    packet: Packet,
+    action: &ActionArgs,
+    reconnect: bool,
+    address: Option<&str>,
+    config_path: &Path,
+    scan_timeout: Duration,
+) -> Result<()> {
+    let wait = wait_duration(action.wait)?;
+    let mut session = open_session(address, config_path, scan_timeout).await?;
+
+    if action.json {
+        eprintln!("Device: {}", session.address());
+    } else {
+        println!("Device: {}", session.address());
+    }
+
+    let mut report = session.sync(SYNC_WINDOW).await?;
+
+    for value in session.exchange(&packet, wait).await? {
+        if !action.json {
+            println!("rx: {}", hex::format(&value));
+            print_notification(&value);
+        }
+        if let Err(error) = report.state.apply_bytes(&value) {
+            report
+                .warnings
+                .push(format!("notification {}: {error}", hex::format(&value)));
+        }
+    }
+
+    if reconnect {
+        if action.json {
+            eprintln!("Reconnecting: the headphones restart when LDAC changes...");
+        } else {
+            println!("Reconnecting: the headphones restart when LDAC changes...");
+        }
+        session
+            .reconnect(RECONNECT_ATTEMPTS, RECONNECT_DELAY)
+            .await?;
+        report = session.sync(SYNC_WINDOW.max(wait)).await?;
+    }
+
+    print_warnings(&report.warnings);
+    print_state(&report.state, action.json)?;
+
+    close(session).await;
+    Ok(())
+}
+
+fn print_warnings(warnings: &[String]) {
+    for warning in warnings {
+        eprintln!("warning: {warning}");
+    }
+}
+
+fn print_state(state: &DeviceState, json: bool) -> Result<()> {
+    if json {
+        println!("{}", serde_json::to_string_pretty(state)?);
+    } else {
+        println!("\n{state}");
+    }
+    Ok(())
 }
 
 async fn open_session(
@@ -489,16 +784,25 @@ async fn send_raw(
     bytes: &[u8],
     wait: Duration,
     with_response: bool,
+    json: bool,
     address: Option<&str>,
     config_path: &Path,
     scan_timeout: Duration,
 ) -> Result<()> {
     let session = open_session(address, config_path, scan_timeout).await?;
-    println!("Device: {}", session.address());
+    if json {
+        eprintln!("Device: {}", session.address());
+    } else {
+        println!("Device: {}", session.address());
+    }
 
     if wait.is_zero() {
         session.write_raw_with(bytes, with_response).await?;
-        println!("Sent {} bytes.", bytes.len());
+        if json {
+            eprintln!("Sent {} bytes.", bytes.len());
+        } else {
+            println!("Sent {} bytes.", bytes.len());
+        }
         close(session).await;
         return Ok(());
     }
@@ -508,12 +812,16 @@ async fn send_raw(
 
     let mut state = DeviceState::default();
     for value in session.receive(&mut notifications, wait).await {
-        println!("rx: {}", hex::format(&value));
-        print_notification(&value);
-        apply_notification(&mut state, &value);
+        if !json {
+            println!("rx: {}", hex::format(&value));
+            print_notification(&value);
+        }
+        if let Err(error) = state.apply_bytes(&value) {
+            eprintln!("warning: notification {}: {error}", hex::format(&value));
+        }
     }
 
-    println!("\n{state}");
+    print_state(&state, json)?;
     close(session).await;
     Ok(())
 }
@@ -541,7 +849,12 @@ async fn monitor(address: Option<&str>, config_path: &Path, scan_timeout: Durati
                         }
                         println!("\nrx: {}", hex::format(&notification.value));
                         print_notification(&notification.value);
-                        apply_notification(&mut state, &notification.value);
+                        if let Err(error) = state.apply_bytes(&notification.value) {
+                            eprintln!(
+                                "warning: notification {}: {error}",
+                                hex::format(&notification.value)
+                            );
+                        }
                     }
                     None => {
                         eprintln!("notification stream ended");
@@ -568,7 +881,10 @@ async fn inspect(address: Option<&str>, config_path: &Path, scan_timeout: Durati
 
     println!("Characteristics:");
     for characteristic in session.characteristics() {
-        println!("  {}  [{}]", characteristic.uuid, characteristic.properties);
+        println!(
+            "  {}  [{}]  service {}",
+            characteristic.uuid, characteristic.properties, characteristic.service_uuid
+        );
     }
 
     close(session).await;
@@ -620,7 +936,7 @@ fn build_packet(command: BuildCommand) -> Result<Packet> {
         BuildCommand::Game { state } => commands::game_mode(state.enabled()),
         BuildCommand::Sleep { state } => commands::sleep_mode(state.enabled()),
         BuildCommand::Balance { value } => commands::channel_balance(value),
-        BuildCommand::Anc(args) => commands::anc(build_anc_mode(args)?),
+        BuildCommand::Anc(args) => commands::anc(build_anc_mode(&args)?),
         BuildCommand::Rename { name } => commands::rename(&name)?,
         BuildCommand::NotificationVolume { level } => commands::notification_volume(level.into()),
         BuildCommand::WearDetection(args) => commands::wear_detection(WearDetection {
@@ -630,56 +946,42 @@ fn build_packet(command: BuildCommand) -> Result<Packet> {
             tone: args.tone,
         }),
         BuildCommand::Ldac { state } => commands::ldac(state.enabled()),
-        BuildCommand::Query { opcode } => {
-            let opcode = opcode
-                .parse::<Opcode>()
-                .map_err(anyhow::Error::msg)
-                .with_context(|| format!("invalid query opcode {opcode:?}"))?;
-            commands::query(opcode)
-        }
+        BuildCommand::Query { opcode } => commands::query(parse_opcode(&opcode)?),
     };
 
     Ok(packet)
 }
 
-fn build_anc_mode(args: AncArgs) -> Result<AncMode> {
-    match args.mode {
-        AncModeArg::Off => {
-            if args.scene.is_some()
-                || args.level.is_some()
-                || args.intensity.is_some()
-                || args.voice
-            {
-                bail!("--scene, --level, --intensity and --voice are not valid in off mode");
+fn parse_opcode(value: &str) -> Result<Opcode> {
+    value
+        .parse::<Opcode>()
+        .map_err(anyhow::Error::msg)
+        .with_context(|| format!("invalid query opcode {value:?}"))
+}
+
+fn build_anc_mode(args: &AncArgs) -> Result<AncMode> {
+    if args.intensity.is_some() || args.voice {
+        if args.scene.is_some() || args.level.is_some() {
+            bail!("--scene and --level are only valid in ANC mode");
+        }
+
+        let mode = match (args.voice, args.intensity) {
+            (true, None) => TransparencyMode::VoiceEnhancement,
+            (false, Some(intensity)) => TransparencyMode::Intensity(intensity),
+            (true, Some(_)) => bail!("--voice and --intensity cannot be used together"),
+            (false, None) => unreachable!("guarded by the outer condition"),
+        };
+
+        return Ok(AncMode::transparency(mode)?);
+    }
+
+    match args.scene {
+        Some(scene) => Ok(AncMode::anc(scene.into(), args.level)?),
+        None => {
+            if args.level.is_some() {
+                bail!("--level requires --scene");
             }
             Ok(AncMode::Off)
-        }
-        AncModeArg::Anc => {
-            if args.intensity.is_some() || args.voice {
-                bail!("--intensity and --voice are only valid in transparency mode");
-            }
-            let scene = args
-                .scene
-                .ok_or_else(|| anyhow!("--scene is required in anc mode"))?;
-            Ok(AncMode::anc(scene.into(), args.level)?)
-        }
-        AncModeArg::Transparency => {
-            if args.scene.is_some() || args.level.is_some() {
-                bail!("--scene and --level are only valid in anc mode");
-            }
-
-            let mode = match (args.voice, args.intensity) {
-                (true, None) => TransparencyMode::VoiceEnhancement,
-                (false, Some(intensity)) => TransparencyMode::Intensity(intensity),
-                (false, None) => {
-                    bail!("transparency mode requires --voice or --intensity 1..=6")
-                }
-                (true, Some(_)) => {
-                    bail!("--voice and --intensity cannot be used together")
-                }
-            };
-
-            Ok(AncMode::transparency(mode)?)
         }
     }
 }
@@ -692,11 +994,24 @@ fn decode_notification(bytes: &[u8], json: bool) -> Result<()> {
     let packets = framing::parse(bytes)?;
 
     if packets.is_empty() {
-        println!("No complete packets found.");
+        if json {
+            eprintln!("No complete packets found.");
+        } else {
+            println!("No complete packets found.");
+        }
         return Ok(());
     }
 
-    print_packet_lines(&packets);
+    let lines = packet_lines(&packets);
+    if json {
+        for line in &lines {
+            eprintln!("{line}");
+        }
+    } else {
+        for line in &lines {
+            println!("{line}");
+        }
+    }
 
     let mut state = DeviceState::default();
     for packet in &packets {
@@ -704,7 +1019,7 @@ fn decode_notification(bytes: &[u8], json: bool) -> Result<()> {
     }
 
     if json {
-        println!("\n{}", serde_json::to_string_pretty(&state)?);
+        println!("{}", serde_json::to_string_pretty(&state)?);
     } else {
         println!("\n{state}");
     }
@@ -714,33 +1029,32 @@ fn decode_notification(bytes: &[u8], json: bool) -> Result<()> {
 
 fn print_notification(bytes: &[u8]) {
     match framing::parse(bytes) {
-        Ok(packets) => print_packet_lines(&packets),
+        Ok(packets) => {
+            for line in packet_lines(&packets) {
+                println!("{line}");
+            }
+        }
         Err(error) => println!("  invalid packet: {error}"),
     }
 }
 
-fn apply_notification(state: &mut DeviceState, bytes: &[u8]) {
-    if let Ok(packets) = framing::parse(bytes) {
-        for packet in &packets {
-            state.apply(packet);
-        }
-    }
-}
-
-fn print_packet_lines(packets: &[Packet]) {
-    for packet in packets {
-        let opcode = Opcode::from_u8(packet.opcode)
-            .map_or_else(|| "unknown".to_string(), |opcode| opcode.to_string());
-        let params = if packet.params.is_empty() {
-            "-".to_string()
-        } else {
-            hex::format(&packet.params)
-        };
-        println!(
-            "  0x{:02X}  {:<22} params: {}",
-            packet.opcode, opcode, params
-        );
-    }
+fn packet_lines(packets: &[Packet]) -> Vec<String> {
+    packets
+        .iter()
+        .map(|packet| {
+            let opcode = Opcode::from_u8(packet.opcode)
+                .map_or_else(|| "unknown".to_string(), |opcode| opcode.to_string());
+            let params = if packet.params.is_empty() {
+                "-".to_string()
+            } else {
+                hex::format(&packet.params)
+            };
+            format!(
+                "  0x{:02X}  {:<22} params: {}",
+                packet.opcode, opcode, params
+            )
+        })
+        .collect()
 }
 
 fn run_touch(command: TouchCommand) -> Result<()> {

@@ -52,15 +52,24 @@ pub struct Battery {
 }
 
 impl Battery {
+    /// Parses `[left, right, case]`.
+    ///
+    /// The reference implementation accepts payloads without the case byte, so
+    /// only the two earbuds are required; a missing case is reported as unknown
+    /// (`-/-`).
     pub fn parse(bytes: &[u8]) -> Result<Self, ProtocolError> {
-        if let [left, right, case, ..] = bytes {
-            Ok(Self {
+        match bytes {
+            [left, right, case, ..] => Ok(Self {
                 left: BatteryLevel::new(*left),
                 right: BatteryLevel::new(*right),
                 case: BatteryLevel::new(*case),
-            })
-        } else {
-            Err(ProtocolError::InvalidBatteryLength(bytes.len()))
+            }),
+            [left, right] => Ok(Self {
+                left: BatteryLevel::new(*left),
+                right: BatteryLevel::new(*right),
+                case: BatteryLevel::new(0),
+            }),
+            _ => Err(ProtocolError::InvalidBatteryLength(bytes.len())),
         }
     }
 }
@@ -118,10 +127,22 @@ mod tests {
     }
 
     #[test]
+    fn accepts_battery_payloads_without_the_case() {
+        let battery = Battery::parse(&[0x50, 0x46]).unwrap();
+        assert_eq!(battery.left.percent(), 80);
+        assert_eq!(battery.right.percent(), 70);
+        assert!(battery.case.is_unknown());
+    }
+
+    #[test]
     fn rejects_short_battery_payloads() {
         assert_eq!(
-            Battery::parse(&[0x50, 0x50]).unwrap_err(),
-            ProtocolError::InvalidBatteryLength(2)
+            Battery::parse(&[0x50]).unwrap_err(),
+            ProtocolError::InvalidBatteryLength(1)
+        );
+        assert_eq!(
+            Battery::parse(&[]).unwrap_err(),
+            ProtocolError::InvalidBatteryLength(0)
         );
     }
 

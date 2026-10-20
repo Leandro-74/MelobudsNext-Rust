@@ -254,15 +254,20 @@ impl TouchMapping {
         bytes
     }
 
-    /// Decodes a 20-byte block. Pairs whose key byte is `0x00` are ignored.
+    /// Decodes any even-length block of `[key, function]` pairs. Pairs whose
+    /// key byte is `0x00` are ignored and trailing pairs for unknown keys are
+    /// preserved only when the key is recognized.
+    ///
+    /// Firmware normally reports 20 bytes (eight pairs plus padding), but some
+    /// versions report only the pairs, so the length is not fixed.
     pub fn parse(bytes: &[u8]) -> Result<Self, ProtocolError> {
-        if bytes.len() != TOUCH_MAPPING_LEN {
+        if bytes.len() < 2 || bytes.len() % 2 != 0 {
             return Err(ProtocolError::InvalidTouchMappingLength(bytes.len()));
         }
 
         let mut mapping = Self::default();
 
-        for pair in bytes[..16].chunks_exact(2) {
+        for pair in bytes.chunks_exact(2) {
             let key = pair[0];
             if key == 0x00 {
                 continue;
@@ -332,10 +337,21 @@ mod tests {
     }
 
     #[test]
+    fn accepts_firmware_payloads_without_padding() {
+        let mapping = TouchMapping::parse(&EXAMPLE[..16]).unwrap();
+        assert_eq!(mapping.get(TouchKey::LeftSingle), TouchFunction::PlayPause);
+        assert_eq!(mapping.get(TouchKey::RightSingle), TouchFunction::Next);
+    }
+
+    #[test]
     fn rejects_invalid_lengths() {
         assert_eq!(
             TouchMapping::parse(&[0x00; 19]).unwrap_err(),
             ProtocolError::InvalidTouchMappingLength(19)
+        );
+        assert_eq!(
+            TouchMapping::parse(&[]).unwrap_err(),
+            ProtocolError::InvalidTouchMappingLength(0)
         );
     }
 }

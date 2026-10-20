@@ -100,6 +100,9 @@ pub enum AncMode {
     Transparency {
         mode: TransparencyMode,
     },
+    /// Triples reported by the firmware that this implementation does not
+    /// understand. They are preserved so live state is never silently dropped.
+    Unknown([u8; 3]),
 }
 
 impl AncMode {
@@ -149,47 +152,59 @@ impl AncMode {
                     TransparencyMode::Intensity(intensity) => intensity,
                 },
             ],
+            Self::Unknown(payload) => payload,
         }
     }
 
     /// Decodes `[mode, sub, noise]`, accepting `02 00 00` as the reported
     /// "off" state used by firmware 2.0.6.
+    ///
+    /// Decoding is lenient: combinations that are not documented are kept in
+    /// [`AncMode::Unknown`] instead of failing, mirroring the reference
+    /// implementation. Validation for outgoing commands lives in [`Self::anc`]
+    /// and [`Self::transparency`].
     pub fn from_params(params: &[u8]) -> Result<Self, ProtocolError> {
         if params.len() < 3 {
             return Err(ProtocolError::InvalidAncLength(params.len()));
         }
 
         let payload = [params[0], params[1], params[2]];
-        match payload {
-            [0x00, _, _] | [0x02, 0x00, 0x00] => Ok(Self::Off),
-            [0x01, sub, noise] => {
-                let scene = AncScene::from_sub(sub).ok_or(ProtocolError::InvalidAnc(payload))?;
 
-                if scene.supports_levels() {
-                    if noise > 2 {
-                        return Err(ProtocolError::InvalidAnc(payload));
-                    }
-                    Ok(Self::Anc {
+        if payload[0] == 0x00 || payload == [0x02, 0x00, 0x00] {
+            return Ok(Self::Off);
+        }
+
+        if let [0x01, sub, noise] = payload {
+            if let Some(scene) = AncScene::from_sub(sub) {
+                if scene.supports_levels() && noise <= 2 {
+                    return Ok(Self::Anc {
                         scene,
                         level: Some(noise + 1),
-                    })
-                } else if noise == 0 {
-                    Ok(Self::Anc { scene, level: None })
-                } else {
-                    Err(ProtocolError::InvalidAnc(payload))
+                    });
+                }
+                if !scene.supports_levels() && noise == 0 {
+                    return Ok(Self::Anc { scene, level: None });
                 }
             }
-            [0x03, 0x01, noise] => match noise {
-                0x00 => Ok(Self::Transparency {
-                    mode: TransparencyMode::VoiceEnhancement,
-                }),
-                0x01..=0x06 => Ok(Self::Transparency {
-                    mode: TransparencyMode::Intensity(noise),
-                }),
-                _ => Err(ProtocolError::InvalidAnc(payload)),
-            },
-            _ => Err(ProtocolError::InvalidAnc(payload)),
         }
+
+        if let [0x03, 0x01, noise] = payload {
+            match noise {
+                0x00 => {
+                    return Ok(Self::Transparency {
+                        mode: TransparencyMode::VoiceEnhancement,
+                    })
+                }
+                0x01..=0x06 => {
+                    return Ok(Self::Transparency {
+                        mode: TransparencyMode::Intensity(noise),
+                    })
+                }
+                _ => {}
+            }
+        }
+
+        Ok(Self::Unknown(payload))
     }
 }
 
@@ -208,6 +223,11 @@ impl fmt::Display for AncMode {
                     write!(f, "transparency/intensity-{intensity}")
                 }
             },
+            Self::Unknown(payload) => write!(
+                f,
+                "unknown({:02X} {:02X} {:02X})",
+                payload[0], payload[1], payload[2]
+            ),
         }
     }
 }
@@ -280,6 +300,8 @@ mod tests {
             AncMode::anc(AncScene::Adaptive, None).unwrap(),
             AncMode::transparency(TransparencyMode::VoiceEnhancement).unwrap(),
             AncMode::transparency(TransparencyMode::Intensity(6)).unwrap(),
+            AncMode::Unknown([0x01, 0x09, 0x00]),
+            AncMode::Unknown([0x03, 0x01, 0x07]),
         ];
 
         for mode in modes {
@@ -288,11 +310,31 @@ mod tests {
     }
 
     #[test]
-    fn rejects_invalid_payloads() {
-        assert!(AncMode::from_params(&[0x01, 0x09, 0x00]).is_err());
-        assert!(AncMode::from_params(&[0x01, 0x01, 0x03]).is_err());
-        assert!(AncMode::from_params(&[0x03, 0x02, 0x00]).is_err());
-        assert!(AncMode::from_params(&[0x03, 0x01, 0x07]).is_err());
-        assert!(AncMode::from_params(&[0x00]).is_err());
+    fn preserves_unknown_payloads_instead_of_failing() {
+        for payload in [
+            [0x01, 0x09, 0x00],
+            [0x01, 0x01, 0x03],
+            [0x02, 0x01, 0x00],
+            [0x03, 0x02, 0x00],
+            [0x03, 0x01, 0x07],
+            [0x04, 0x00, 0x00],
+        ] {
+            assert_eq!(
+                AncMode::from_params(&payload).unwrap(),
+                AncMode::Unknown(payload)
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_truncated_payloads() {
+        assert_eq!(
+            AncMode::from_params(&[0x00]).unwrap_err(),
+            ProtocolError::InvalidAncLength(1)
+        );
+        assert_eq!(
+            AncMode::from_params(&[0x01, 0x02]).unwrap_err(),
+            ProtocolError::InvalidAncLength(2)
+        );
     }
 }

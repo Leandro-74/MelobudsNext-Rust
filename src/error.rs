@@ -33,12 +33,12 @@ pub enum ProtocolError {
     #[error("invalid transparency intensity {0}; expected a value in 1..=6")]
     InvalidTransparencyIntensity(u8),
 
-    #[error("invalid battery payload length: {0} (expected 3)")]
+    #[error("invalid battery payload length: {0} (expected at least 2)")]
     InvalidBatteryLength(usize),
 
     #[error("invalid firmware payload length: {0} (expected 3)")]
     InvalidFirmwareLength(usize),
 
-    #[error("invalid touch mapping length: {0} (expected 20)")]
+    #[error("invalid touch mapping length: {0} (expected an even number of bytes, normally 20)")]
     InvalidTouchMappingLength(usize),
 }

@@ -20,16 +20,17 @@ impl Packet {
 
     /// Encodes the packet as `FF body_len opcode param_len params...`.
     ///
-    /// Protocol parameters are limited to 255 bytes. All command builders in
-    /// this crate enforce smaller limits, so this method only asserts the
-    /// protocol invariant in debug builds.
+    /// `body_len` includes the opcode and the parameter length, so the
+    /// protocol allows at most 253 parameter bytes. The invariant is asserted
+    /// instead of silently truncating the length byte.
     pub fn encode(&self) -> Vec<u8> {
-        debug_assert!(
-            self.params.len() <= u8::MAX as usize,
-            "packet parameters exceed 255 bytes"
+        assert!(
+            self.params.len() <= 253,
+            "packet parameters exceed the 253-byte protocol limit"
         );
+
         let param_len = self.params.len() as u8;
-        let body_len = param_len.saturating_add(2);
+        let body_len = param_len + 2;
 
         let mut bytes = Vec::with_capacity(4 + self.params.len());
         bytes.push(PACKET_HEADER);
@@ -119,5 +120,11 @@ mod tests {
             Packet::new(0x09, [0x01]).encode(),
             [0xFF, 0x03, 0x09, 0x01, 0x01]
         );
+    }
+
+    #[test]
+    #[should_panic(expected = "253-byte protocol limit")]
+    fn rejects_oversized_parameters_instead_of_truncating() {
+        Packet::new(0x42, vec![0u8; 254]).encode();
     }
 }

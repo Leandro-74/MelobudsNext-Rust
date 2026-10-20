@@ -85,10 +85,12 @@ impl DeviceState {
                 Err(_) => false,
             },
             Opcode::Rename => {
-                let name = String::from_utf8_lossy(&packet.params)
-                    .trim_end_matches('\0')
-                    .to_string();
-                self.name = Some(name);
+                let name = String::from_utf8_lossy(&packet.params);
+                let name = name.trim_end_matches('\0');
+                if name.is_empty() {
+                    return false;
+                }
+                self.name = Some(name.to_string());
                 true
             }
             Opcode::NotificationVolume => {
@@ -295,6 +297,24 @@ mod tests {
             state.anc,
             AncMode::transparency(TransparencyMode::Intensity(4)).unwrap()
         );
+    }
+
+    #[test]
+    fn ignores_empty_rename_echoes() {
+        let mut state = DeviceState::default();
+        assert!(state.apply(&Packet::new(0x18, b"Fone\0".to_vec())));
+        assert_eq!(state.name.as_deref(), Some("Fone"));
+
+        assert!(!state.apply(&Packet::new(0x18, b"\0\0\0".to_vec())));
+        assert!(!state.apply(&Packet::new(0x18, Vec::new())));
+        assert_eq!(state.name.as_deref(), Some("Fone"));
+    }
+
+    #[test]
+    fn keeps_unknown_anc_reports() {
+        let mut state = DeviceState::default();
+        assert!(state.apply(&Packet::new(0x17, [0x01, 0x09, 0x00])));
+        assert_eq!(state.anc, AncMode::Unknown([0x01, 0x09, 0x00]));
     }
 
     #[test]

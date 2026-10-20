@@ -70,8 +70,32 @@ fn decodes_battery_and_firmware_readings() {
     assert_eq!(battery.right.percent(), 70);
     assert!(battery.case.is_unknown());
 
+    let without_case = Battery::parse(&bytes("50 46")).unwrap();
+    assert_eq!(without_case.left.percent(), 80);
+    assert!(without_case.case.is_unknown());
+
     let firmware = FirmwareVersion::parse(&bytes("02 00 06")).unwrap();
     assert_eq!(firmware.to_string(), "2.0.6");
+}
+
+#[test]
+fn tolerates_firmware_variations_reported_by_the_python_client() {
+    let mut state = DeviceState::default();
+    state
+        .apply_bytes(&bytes("FF 05 17 03 01 09 00"))
+        .expect("unknown ANC triple");
+    assert_eq!(state.anc, AncMode::Unknown([0x01, 0x09, 0x00]));
+
+    let touch =
+        TouchMapping::parse(&bytes("01 01 02 03 03 00 04 00 05 00 06 00 07 00 08 00")).unwrap();
+    assert_eq!(touch.get(TouchKey::RightSingle), TouchFunction::Next);
+
+    let mut renamed = DeviceState::default();
+    renamed
+        .apply_bytes(&bytes("FF 06 18 04 46 6F 6E 65"))
+        .unwrap();
+    renamed.apply_bytes(&bytes("FF 04 18 02 00 00")).unwrap();
+    assert_eq!(renamed.name.as_deref(), Some("Fone"));
 }
 
 #[test]

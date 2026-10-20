@@ -38,11 +38,62 @@ impl Default for BleUuids {
 }
 
 /// Persistent configuration stored in `~/.melobudsnext/config.json`.
+///
+/// Deserialization also accepts the flat format written by the Python
+/// implementation (`address`, `uuid_service`, `uuid_write`, `uuid_notify`), so
+/// an existing installation keeps working without manual conversion.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(from = "RawConfig")]
 pub struct Config {
     pub mac_address: Option<String>,
     pub uuids: BleUuids,
+}
+
+/// Intermediate representation covering both the current and the legacy
+/// configuration layouts.
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+struct RawConfig {
+    mac_address: Option<String>,
+    uuids: Option<BleUuids>,
+    address: Option<String>,
+    uuid_service: Option<String>,
+    uuid_write: Option<String>,
+    uuid_notify: Option<String>,
+}
+
+impl From<RawConfig> for Config {
+    fn from(raw: RawConfig) -> Self {
+        let RawConfig {
+            mac_address,
+            uuids,
+            address,
+            uuid_service,
+            uuid_write,
+            uuid_notify,
+        } = raw;
+
+        // When the current nested layout is present it wins as a whole; the
+        // legacy flat keys are only consulted for old configuration files.
+        let uuids = uuids.unwrap_or_else(|| {
+            let mut uuids = BleUuids::default();
+            if let Some(value) = uuid_service {
+                uuids.service = value;
+            }
+            if let Some(value) = uuid_write {
+                uuids.command_write = value;
+            }
+            if let Some(value) = uuid_notify {
+                uuids.notification = value;
+            }
+            uuids
+        });
+
+        Self {
+            mac_address: mac_address.or(address),
+            uuids,
+        }
+    }
 }
 
 impl Config {
@@ -143,5 +194,38 @@ mod tests {
         assert_eq!(config.uuids, BleUuids::default());
 
         fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn loads_the_legacy_python_layout() {
+        let contents = r#"{
+            "address": "11:22:33:44:55:66",
+            "uuid_service": "0000a001-0000-1000-8000-00805f9b34fb",
+            "uuid_write": "00001001-0000-1000-8000-00805f9b34fb",
+            "uuid_notify": "00001002-0000-1000-8000-00805f9b34fb"
+        }"#;
+
+        let config: Config = serde_json::from_str(contents).unwrap();
+
+        assert_eq!(config.mac_address.as_deref(), Some("11:22:33:44:55:66"));
+        assert_eq!(config.uuids.service, SERVICE_UUID);
+        assert_eq!(config.uuids.command_write, COMMAND_WRITE_UUID);
+        assert_eq!(config.uuids.notification, NOTIFICATION_UUID);
+        assert_eq!(config.uuids.battery, BATTERY_UUID);
+    }
+
+    #[test]
+    fn prefers_the_current_layout_over_legacy_keys() {
+        let contents = r#"{
+            "mac_address": "AA:BB:CC:DD:EE:FF",
+            "address": "11:22:33:44:55:66",
+            "uuids": {"service": "11111111-0000-1000-8000-00805f9b34fb"},
+            "uuid_service": "22222222-0000-1000-8000-00805f9b34fb"
+        }"#;
+
+        let config: Config = serde_json::from_str(contents).unwrap();
+
+        assert_eq!(config.mac_address.as_deref(), Some("AA:BB:CC:DD:EE:FF"));
+        assert_eq!(config.uuids.service, "11111111-0000-1000-8000-00805f9b34fb");
     }
 }
