@@ -2,7 +2,8 @@
 
 CLI para testar o protocolo BLE do QCY Melobuds Pro, portada do projeto Python
 em `MelobudsNext/`. O foco é comunicar com o fone, enviar comandos e inspecionar
-o estado sem precisar de interface gráfica.
+o estado sem precisar de interface gráfica. Também há uma GUI iced no binário
+`melobudsnext-gui`, descrita mais abaixo.
 
 O protocolo está documentado em [`PROTOCOLO_MelobudsNext.md`](PROTOCOLO_MelobudsNext.md).
 
@@ -101,6 +102,37 @@ cargo run -- device write-touch \
   --bind left-double=previous
 ```
 
+## Interface gráfica
+
+O binário `melobudsnext-gui` oferece um painel para o dia a dia sem decorar
+comandos. Ele reutiliza a mesma camada BLE, o mesmo protocolo e o mesmo arquivo
+de configuração do CLI:
+
+```sh
+cargo run --bin melobudsnext-gui
+```
+
+Se houver um `mac_address` na configuração, a GUI tenta conectar sozinha ao
+abrir. O cabeçalho permite conectar, atualizar e desconectar; as abas cobrem
+status, ANC, áudio (LDAC, modo jogo/sono, balanço), toque e detecção de uso.
+LDAC e os modos jogo/sono são enviados na hora; ANC, sliders, mapa de toque e
+nome usam um rascunho local e o botão **Aplicar**.
+
+Para abrir a interface sem acessar o Bluetooth (útil para conferir o layout ou
+gravar capturas), use:
+
+```sh
+cargo run --bin melobudsnext-gui -- --offline
+```
+
+O mesmo modo pode ser ativado com `MELOBUDNEXT_GUI_OFFLINE=1`. Nele o botão de
+conexão fica desabilitado e o rodapé mostra um aviso.
+
+A janela tem tamanho fixo de 1200x800 (layout de dashboard) e usa o renderer
+**tiny-skia** (CPU). O wgpu não foi usado porque, neste ambiente, ele abria uma
+janela branca; a ilustração dos fones é composta com widgets padrão do iced para
+evitar deslocamentos de canvas/SVG em telas com escala de 125%.
+
 ## Testes sem o fone
 
 ```sh
@@ -153,6 +185,10 @@ O formato antigo do projeto Python também é aceito na leitura:
 }
 ```
 
+Ao gravar (`config set-mac` ou `config init`), o CLI reescreve o arquivo no
+formato novo com `mac_address`; se o mesmo arquivo for compartilhado com o TUI
+Python, faça uma cópia antes, porque ele espera a chave `address`.
+
 ## Comportamento e diferenças em relação ao Python
 
 - Decodificação tolerante: ANC desconhecido é preservado como `unknown(...)`,
@@ -165,8 +201,9 @@ O formato antigo do projeto Python também é aceito na leitura:
 - Depois de mudar LDAC, a conexão é refeita automaticamente (10 tentativas, 3 s
   entre elas), como no cliente Python.
 - Saída `--json` é JSON puro em `stdout`.
-- Ainda não há TUI; os comandos são de uma execução só, com `device monitor` para
-  acompanhar notificações.
+- Não há TUI; os comandos do CLI são de uma execução só, com `device monitor`
+  para acompanhar notificações. A interface gráfica é um binário separado
+  (`melobudsnext-gui`) e compartilha a mesma camada de BLE e protocolo.
 
 ## Testes
 
