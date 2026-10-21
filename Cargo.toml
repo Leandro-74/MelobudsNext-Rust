@@ -12,7 +12,7 @@ anyhow = "1"
 btleplug = "0.13.5"
 clap = { version = "4", features = ["derive"] }
 futures = "0.3"
-iced = { version = "0.13.1", default-features = false, features = ["tokio", "tiny-skia", "fira-sans"] }
+iced = { version = "0.13.1", default-features = false, features = ["tokio", "tiny-skia", "fira-sans", "svg"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"

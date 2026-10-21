@@ -43,31 +43,22 @@ impl fmt::Display for BatteryLevel {
     }
 }
 
-/// Battery payload read from characteristic `00000008`: `[left, right, case]`.
+/// Battery payload read from characteristic `00000008`: `[left, right, ..]`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Battery {
     pub left: BatteryLevel,
     pub right: BatteryLevel,
-    pub case: BatteryLevel,
 }
 
 impl Battery {
-    /// Parses `[left, right, case]`.
+    /// Parses `[left, right, ..]`.
     ///
-    /// The reference implementation accepts payloads without the case byte, so
-    /// only the two earbuds are required; a missing case is reported as unknown
-    /// (`-/-`).
+    /// Only the two earbuds are required. Any trailing bytes are ignored.
     pub fn parse(bytes: &[u8]) -> Result<Self, ProtocolError> {
         match bytes {
-            [left, right, case, ..] => Ok(Self {
+            [left, right, ..] => Ok(Self {
                 left: BatteryLevel::new(*left),
                 right: BatteryLevel::new(*right),
-                case: BatteryLevel::new(*case),
-            }),
-            [left, right] => Ok(Self {
-                left: BatteryLevel::new(*left),
-                right: BatteryLevel::new(*right),
-                case: BatteryLevel::new(0),
             }),
             _ => Err(ProtocolError::InvalidBatteryLength(bytes.len())),
         }
@@ -76,11 +67,7 @@ impl Battery {
 
 impl fmt::Display for Battery {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "left: {}, right: {}, case: {}",
-            self.left, self.right, self.case
-        )
+        write!(f, "left: {}, right: {}", self.left, self.right)
     }
 }
 
@@ -123,15 +110,13 @@ mod tests {
         assert!(battery.left.charging());
         assert_eq!(battery.right.percent(), 70);
         assert!(!battery.right.charging());
-        assert!(battery.case.is_unknown());
     }
 
     #[test]
-    fn accepts_battery_payloads_without_the_case() {
+    fn accepts_battery_payloads_with_two_bytes() {
         let battery = Battery::parse(&[0x50, 0x46]).unwrap();
         assert_eq!(battery.left.percent(), 80);
         assert_eq!(battery.right.percent(), 70);
-        assert!(battery.case.is_unknown());
     }
 
     #[test]

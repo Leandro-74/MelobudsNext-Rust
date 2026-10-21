@@ -1099,7 +1099,6 @@ fn decode_battery(bytes: &[u8]) -> Result<()> {
     let battery = Battery::parse(bytes)?;
     println!("Left:  {}", battery.left);
     println!("Right: {}", battery.right);
-    println!("Case:  {}", battery.case);
     Ok(())
 }
 

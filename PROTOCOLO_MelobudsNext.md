@@ -39,7 +39,7 @@ Funcionalidades cobertas: Game Mode, ANC (com cenas e níveis), Modo Transparên
 
 | Dado | UUID | Modo | Formato |
 | --- | --- | --- | --- |
-| Bateria | `00000008-0000-1000-8000-00805f9b34fb` | Read | `[L, R, estojo]` |
+| Bateria | `00000008-0000-1000-8000-00805f9b34fb` | Read | `[L, R, reservado]` |
 | Versão do firmware | `00000007-0000-1000-8000-00805f9b34fb` | Read | `[major, minor, patch]` |
 | Mapeamento de toque | `0000000d-0000-1000-8000-00805f9b34fb` | Read / Write | 20 bytes (ver seção 5) |
 
@@ -282,11 +282,11 @@ Envia `FE 01 <opcode alvo>` para pedir o estado atual de um opcode. A resposta c
 
 ### 7.9 Bateria e versão (leitura direta)
 
-**Bateria** (`00000008`): três bytes `[L, R, estojo]`.
+**Bateria** (`00000008`): três bytes `[L, R, reservado]`.
 - Bit 7: carregando (`1`) ou não (`0`).
 - Bits 0 a 6: nível de 0 a 127%, na prática de 0 a 100.
 - Nível `0` é exibido como `-/-` (sem dados).
-- O estojo sempre reporta `0` neste firmware.
+- O terceiro byte é ignorado.
 
 **Versão** (`00000007`): três bytes, formatados como `major.minor.patch`. Exemplo: `02 00 06` vira `2.0.6`.
 
@@ -299,9 +299,8 @@ Estas são divergências em relação ao protocolo padrão da QCY, observadas no
 1. `0x0C` (ANC simples) não existe. Use apenas `0x17`.
 2. `0xFE` não responde para bateria nem versão. Essas informações vêm das leituras diretas.
 3. O fone fica silencioso em repouso e só envia notificações quando o estado muda.
-4. Bateria do estojo sempre retorna `0`.
-5. O byte `0x0B` do toque corresponde ao Modo ANC, e não a "rediscar".
-6. O opcode `0x28` (ANC Wear/Result) é recebido, mas ainda não foi decodificado.
+4. O byte `0x0B` do toque corresponde ao Modo ANC, e não a "rediscar".
+5. O opcode `0x28` (ANC Wear/Result) é recebido, mas ainda não foi decodificado.
 
 ---
 

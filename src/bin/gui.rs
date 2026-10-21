@@ -18,11 +18,11 @@ use melobudsnext::protocol::touch::{TouchFunction, TouchKey, TouchMapping};
 use melobudsnext::DeviceState;
 
 use iced::widget::{
-    button, column, container, horizontal_space, pick_list, row, scrollable, slider, text,
+    button, column, container, horizontal_space, pick_list, row, scrollable, slider, svg, text,
     text_input, toggler, Space,
 };
 use iced::{
-    Alignment, Background, Border, Color, Element, Font, Length, Shadow, Size, Task, Theme, Vector,
+    Alignment, Background, Border, Color, Element, Font, Length, Shadow, Size, Task, Theme,
 };
 
 // ---------------------------------------------------------------------------
@@ -37,9 +37,13 @@ const CARD_DEEP: Color = Color::from_rgb(0.055, 0.061, 0.071);
 const TEXT: Color = Color::from_rgb(0.941, 0.949, 0.961);
 const MUTED: Color = Color::from_rgb(0.553, 0.584, 0.635);
 const BORDER: Color = Color::from_rgb(0.173, 0.188, 0.216);
-const ACCENT: Color = Color::from_rgb(0.722, 0.949, 0.294);
-const ACCENT_HOVER: Color = Color::from_rgb(0.792, 0.988, 0.396);
-const ACCENT_PRESSED: Color = Color::from_rgb(0.643, 0.855, 0.235);
+const ACCENT: Color = Color::from_rgb(0.533, 0.208, 0.914);
+const ACCENT_HOVER: Color = Color::from_rgb(0.612, 0.302, 0.945);
+const ACCENT_PRESSED: Color = Color::from_rgb(0.455, 0.157, 0.812);
+
+const LOGO_SVG: &[u8] = include_bytes!("../../assets/logo.svg");
+const EARBUD_LEFT_SVG: &[u8] = include_bytes!("../../assets/earbud-left.svg");
+const EARBUD_RIGHT_SVG: &[u8] = include_bytes!("../../assets/earbud-right.svg");
 const VIOLET: Color = Color::from_rgb(0.604, 0.549, 1.0);
 const AMBER: Color = Color::from_rgb(1.0, 0.784, 0.341);
 const DANGER: Color = Color::from_rgb(1.0, 0.478, 0.478);
@@ -399,10 +403,6 @@ impl App {
     fn battery_right(&self) -> Option<melobudsnext::protocol::readings::BatteryLevel> {
         self.state.battery.map(|battery| battery.right)
     }
-
-    fn battery_case(&self) -> Option<melobudsnext::protocol::readings::BatteryLevel> {
-        self.state.battery.map(|battery| battery.case)
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -410,26 +410,20 @@ impl App {
 // ---------------------------------------------------------------------------
 
 fn update(app: &mut App, message: Message) -> Task<Message> {
+    let message = match message {
+        Message::Finished(result) => return app.finish(result),
+        message => message,
+    };
+
+    if apply_local(app, &message) {
+        return Task::none();
+    }
+
     if app.busy.is_some() {
-        match message {
-            Message::Tab(tab) => {
-                app.tab = tab;
-                return Task::none();
-            }
-            Message::Finished(result) => return app.finish(result),
-            _ => return Task::none(),
-        }
+        return Task::none();
     }
 
     match message {
-        Message::Tab(tab) => {
-            app.tab = tab;
-            Task::none()
-        }
-        Message::AddressChanged(value) => {
-            app.address_input = value;
-            Task::none()
-        }
         Message::Connect => {
             if app.offline {
                 app.notice =
@@ -445,24 +439,6 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
         }
         Message::Refresh => app.dispatch("Sincronizando estado…", Action::Refresh),
         Message::Disconnect => app.dispatch("Desconectando…", Action::Disconnect),
-        Message::Finished(result) => app.finish(result),
-
-        Message::SelectAnc(choice) => {
-            app.anc_choice = choice;
-            Task::none()
-        }
-        Message::AncLevelChanged(level) => {
-            app.anc_level = level;
-            Task::none()
-        }
-        Message::TransparencyIntensityChanged(intensity) => {
-            app.transparency_intensity = intensity;
-            Task::none()
-        }
-        Message::VoiceEnhanced(enabled) => {
-            app.transparency_voice = enabled;
-            Task::none()
-        }
         Message::ApplyAnc => match app.active_anc_mode() {
             Ok(mode) => app.dispatch(
                 "Aplicando ANC…",
@@ -479,56 +455,61 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
             }
         },
 
-        Message::ToggleGame(enabled) => app.dispatch(
-            if enabled {
-                "Ativando modo jogo…"
-            } else {
-                "Desativando modo jogo…"
-            },
-            Action::Command {
-                packet: commands::game_mode(enabled),
-                reconnect: false,
-                refresh_drafts: false,
-                label: if enabled {
-                    "Modo jogo ativado."
+        Message::ToggleGame(enabled) => {
+            app.state.game_mode = enabled;
+            app.dispatch(
+                if enabled {
+                    "Ativando modo jogo…"
                 } else {
-                    "Modo jogo desativado."
+                    "Desativando modo jogo…"
                 },
-            },
-        ),
-        Message::ToggleSleep(enabled) => app.dispatch(
-            if enabled {
-                "Ativando modo sono…"
-            } else {
-                "Desativando modo sono…"
-            },
-            Action::Command {
-                packet: commands::sleep_mode(enabled),
-                reconnect: false,
-                refresh_drafts: false,
-                label: if enabled {
-                    "Modo sono ativado."
+                Action::Command {
+                    packet: commands::game_mode(enabled),
+                    reconnect: false,
+                    refresh_drafts: false,
+                    label: if enabled {
+                        "Modo jogo ativado."
+                    } else {
+                        "Modo jogo desativado."
+                    },
+                },
+            )
+        }
+        Message::ToggleSleep(enabled) => {
+            app.state.sleep_mode = enabled;
+            app.dispatch(
+                if enabled {
+                    "Ativando modo sono…"
                 } else {
-                    "Modo sono desativado."
+                    "Desativando modo sono…"
                 },
-            },
-        ),
-        Message::ToggleLdac(enabled) => app.dispatch(
-            "Alterando LDAC e reconectando…",
-            Action::Command {
-                packet: commands::ldac(enabled),
-                reconnect: true,
-                refresh_drafts: true,
-                label: if enabled {
-                    "LDAC ativado; o fone foi reconectado."
-                } else {
-                    "LDAC desativado; o fone foi reconectado."
+                Action::Command {
+                    packet: commands::sleep_mode(enabled),
+                    reconnect: false,
+                    refresh_drafts: false,
+                    label: if enabled {
+                        "Modo sono ativado."
+                    } else {
+                        "Modo sono desativado."
+                    },
                 },
-            },
-        ),
-        Message::BalanceChanged(value) => {
-            app.balance = value;
-            Task::none()
+            )
+        }
+        Message::ToggleLdac(enabled) => {
+            app.state.ldac = enabled;
+            app.dispatch(
+                "Alterando LDAC e reconectando…",
+                Action::Command {
+                    packet: commands::ldac(enabled),
+                    reconnect: true,
+                    refresh_drafts: true,
+                    label: if enabled {
+                        "LDAC ativado; o fone foi reconectado."
+                    } else {
+                        "LDAC desativado; o fone foi reconectado."
+                    },
+                },
+            )
         }
         Message::ApplyBalance => app.dispatch(
             "Aplicando balanço…",
@@ -552,38 +533,13 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
             )
         }
 
-        Message::TouchChanged(key, option) => {
-            app.touch_draft.set(key, option.0);
-            Task::none()
-        }
         Message::ApplyTouch => app.dispatch(
             "Gravando mapa de toque…",
             Action::Touch {
                 mapping: app.touch_draft.clone(),
             },
         ),
-        Message::ResetTouch => {
-            app.touch_draft = app.state.touch.clone().unwrap_or_default();
-            app.notice = Some("Alterações do mapa de toque descartadas.".to_string());
-            Task::none()
-        }
 
-        Message::WearEnabled(enabled) => {
-            app.wear_enabled = enabled;
-            Task::none()
-        }
-        Message::WearKeepAnc(enabled) => {
-            app.wear_keep_anc = enabled;
-            Task::none()
-        }
-        Message::WearMusicChanged(value) => {
-            app.wear_music = value;
-            Task::none()
-        }
-        Message::WearToneChanged(value) => {
-            app.wear_tone = value;
-            Task::none()
-        }
         Message::ApplyWear => {
             let music_index = match app.wear_music.trim().parse::<u8>() {
                 Ok(value) => value,
@@ -619,10 +575,6 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
             )
         }
 
-        Message::RenameChanged(value) => {
-            app.rename_input = value;
-            Task::none()
-        }
         Message::ApplyRename => {
             let name = app.rename_input.trim().to_string();
             if name.is_empty() {
@@ -639,7 +591,36 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
             }
             app.dispatch("Renomeando dispositivo…", Action::Rename { name })
         }
+
+        _ => Task::none(),
     }
+}
+
+fn apply_local(app: &mut App, message: &Message) -> bool {
+    match message {
+        Message::Tab(tab) => app.tab = *tab,
+        Message::AddressChanged(value) => app.address_input = value.clone(),
+        Message::SelectAnc(choice) => app.anc_choice = *choice,
+        Message::AncLevelChanged(level) => app.anc_level = *level,
+        Message::TransparencyIntensityChanged(intensity) => {
+            app.transparency_intensity = *intensity;
+        }
+        Message::VoiceEnhanced(enabled) => app.transparency_voice = *enabled,
+        Message::BalanceChanged(value) => app.balance = *value,
+        Message::TouchChanged(key, option) => app.touch_draft.set(*key, option.0),
+        Message::ResetTouch => {
+            app.touch_draft = app.state.touch.clone().unwrap_or_default();
+            app.notice = Some("Alterações do mapa de toque descartadas.".to_string());
+        }
+        Message::WearEnabled(enabled) => app.wear_enabled = *enabled,
+        Message::WearKeepAnc(enabled) => app.wear_keep_anc = *enabled,
+        Message::WearMusicChanged(value) => app.wear_music = value.clone(),
+        Message::WearToneChanged(value) => app.wear_tone = value.clone(),
+        Message::RenameChanged(value) => app.rename_input = value.clone(),
+        _ => return false,
+    }
+
+    true
 }
 
 // ---------------------------------------------------------------------------
@@ -732,12 +713,7 @@ fn header(app: &App) -> Element<'_, Message> {
     }
 
     row![
-        container(text("MB").size(14).font(bold()).color(BG))
-            .width(Length::Fixed(38.0))
-            .height(Length::Fixed(38.0))
-            .center_x(Length::Fixed(38.0))
-            .center_y(Length::Fixed(38.0))
-            .style(logo_style),
+        icon(LOGO_SVG, 38.0, 38.0, ACCENT),
         column![
             text("MELOBUDNEXT").size(10).font(bold()).color(ACCENT),
             text(name).size(21).font(bold()).color(TEXT),
@@ -763,7 +739,6 @@ fn header(app: &App) -> Element<'_, Message> {
         row![
             battery_chip("L", app.battery_left()),
             battery_chip("R", app.battery_right()),
-            battery_chip("CASE", app.battery_case()),
         ]
         .spacing(6)
         .align_y(Alignment::Center),
@@ -798,29 +773,18 @@ fn left_panel(app: &App) -> Element<'_, Message> {
     .spacing(6)
     .align_y(Alignment::Center);
 
-    let accent = if app.connected {
-        anc_color(app.state.anc)
-    } else {
-        MUTED
-    };
-    let active = app.connected && !matches!(app.state.anc, AncMode::Off | AncMode::Unknown(_));
+    let bud_color = if app.connected { ACCENT } else { MUTED };
     let illustration = container(
-        column![
-            row![
-                bud_label("L", accent),
-                art_bud(accent, active),
-                horizontal_space(),
-                art_bud(accent, active),
-                bud_label("R", accent),
-            ]
-            .width(Length::Fill)
-            .spacing(14)
-            .align_y(Alignment::Center),
-            art_case(),
+        row![
+            bud_label("L", bud_color),
+            icon(EARBUD_LEFT_SVG, 104.0, 154.0, bud_color),
+            horizontal_space(),
+            icon(EARBUD_RIGHT_SVG, 104.0, 154.0, bud_color),
+            bud_label("R", bud_color),
         ]
-        .spacing(6)
-        .align_x(Alignment::Center)
-        .width(Length::Fill),
+        .width(Length::Fill)
+        .spacing(14)
+        .align_y(Alignment::Center),
     )
     .width(Length::Fill)
     .padding(12)
@@ -937,70 +901,11 @@ fn circle_style(
     }
 }
 
-fn transparent_shadow() -> Shadow {
-    Shadow {
-        color: Color::TRANSPARENT,
-        offset: Vector::new(0.0, 0.0),
-        blur_radius: 0.0,
-    }
-}
-
-fn art_bud(accent: Color, active: bool) -> Element<'static, Message> {
-    let head = container(
-        container(Space::new(20.0, 20.0))
-            .width(20.0)
-            .height(20.0)
-            .style(circle_style(
-                BG,
-                Color::from_rgb(0.10, 0.11, 0.13),
-                1.0,
-                10.0,
-            )),
-    )
-    .width(66.0)
-    .height(66.0)
-    .align_x(Alignment::Center)
-    .align_y(Alignment::Center)
-    .style(move |_| container::Style {
-        background: Some(Background::Color(Color::from_rgb(0.19, 0.20, 0.24))),
-        border: Border {
-            color: Color::from_rgb(0.36, 0.39, 0.44),
-            width: 1.5,
-            radius: 33.0.into(),
-        },
-        shadow: if active {
-            Shadow {
-                color: Color { a: 0.16, ..accent },
-                offset: Vector::new(0.0, 0.0),
-                blur_radius: 26.0,
-            }
-        } else {
-            transparent_shadow()
-        },
-        ..container::Style::default()
-    });
-
-    let stem = container(
-        container(Space::new(6.0, 42.0))
-            .width(6.0)
-            .height(42.0)
-            .style(circle_style(accent, accent, 0.0, 3.0)),
-    )
-    .width(26.0)
-    .height(76.0)
-    .align_x(Alignment::Center)
-    .align_y(Alignment::Center)
-    .style(circle_style(
-        Color::from_rgb(0.17, 0.18, 0.22),
-        Color::from_rgb(0.30, 0.33, 0.37),
-        1.2,
-        13.0,
-    ));
-
-    column![head, stem]
-        .spacing(0)
-        .align_x(Alignment::Center)
-        .width(112.0)
+fn icon(data: &'static [u8], width: f32, height: f32, color: Color) -> Element<'static, Message> {
+    svg(svg::Handle::from_memory(data))
+        .width(Length::Fixed(width))
+        .height(Length::Fixed(height))
+        .style(move |_, _| svg::Style { color: Some(color) })
         .into()
 }
 
@@ -1012,64 +917,6 @@ fn bud_label(label: &'static str, accent: Color) -> Element<'static, Message> {
         .align_y(Alignment::Center)
         .style(circle_style(CARD_DEEP, accent, 1.5, 21.0))
         .into()
-}
-
-fn art_case() -> Element<'static, Message> {
-    container(column![
-        container(
-            row![
-                horizontal_space(),
-                container(Space::new(26.0, 4.0))
-                    .width(26.0)
-                    .height(4.0)
-                    .style(circle_style(BG, BG, 0.0, 2.0)),
-                horizontal_space(),
-            ]
-            .align_y(Alignment::Center),
-        )
-        .width(Length::Fill)
-        .height(38.0)
-        .align_y(Alignment::Center),
-        container(Space::new(Length::Fill, 1.0))
-            .width(Length::Fill)
-            .height(1.0)
-            .style(|_| container::Style {
-                background: Some(Background::Color(BORDER)),
-                ..container::Style::default()
-            }),
-        container(
-            column![
-                text("QCY").size(13).font(medium()).color(MUTED),
-                text("CASE")
-                    .size(7)
-                    .font(bold())
-                    .color(Color::from_rgb(0.40, 0.43, 0.48)),
-            ]
-            .spacing(1)
-            .align_x(Alignment::Center),
-        )
-        .width(Length::Fill)
-        .height(61.0)
-        .align_x(Alignment::Center)
-        .align_y(Alignment::Center),
-    ])
-    .width(210.0)
-    .height(100.0)
-    .style(|_| container::Style {
-        background: Some(Background::Color(Color::from_rgb(0.11, 0.12, 0.14))),
-        border: Border {
-            color: Color::from_rgb(0.26, 0.28, 0.32),
-            width: 1.2,
-            radius: 26.0.into(),
-        },
-        shadow: Shadow {
-            color: Color::from_rgba(0.0, 0.0, 0.0, 0.35),
-            offset: Vector::new(0.0, 6.0),
-            blur_radius: 16.0,
-        },
-        ..container::Style::default()
-    })
-    .into()
 }
 
 fn right_panel(app: &App) -> Element<'_, Message> {
@@ -1152,7 +999,6 @@ fn status_tab(app: &App) -> Element<'_, Message> {
         row![
             battery_card("FONE ESQUERDO", app.battery_left()),
             battery_card("FONE DIREITO", app.battery_right()),
-            battery_card("ESTOJO", app.battery_case()),
         ]
         .spacing(10),
         section(
@@ -1264,7 +1110,7 @@ fn anc_tab(app: &App) -> Element<'_, Message> {
                 "Reforço de voz",
                 "Prioriza vozes próximas em vez de aplicar intensidade fixa.",
                 app.transparency_voice,
-                app.busy.is_none(),
+                true,
                 Message::VoiceEnhanced,
             ),]
             .spacing(10);
@@ -1489,14 +1335,14 @@ fn wear_tab(app: &App) -> Element<'_, Message> {
                     "Ativar detecção",
                     "Usa os sensores ópticos para saber se o fone está no ouvido.",
                     app.wear_enabled,
-                    app.busy.is_none(),
+                    true,
                     Message::WearEnabled,
                 ),
                 toggle_row(
                     "Manter ANC ao remover",
                     "Não desliga o cancelamento quando o fone sai do ouvido.",
                     app.wear_keep_anc,
-                    app.busy.is_none(),
+                    true,
                     Message::WearKeepAnc,
                 ),
             ]
@@ -1623,7 +1469,7 @@ fn toggle_row(
             .spacing(2)
             .width(Length::Fill),
             toggler(value)
-                .on_toggle(message)
+                .on_toggle_maybe(enabled.then_some(message))
                 .size(20)
                 .style(move |theme, status| toggler_style(value, theme, status)),
         ]
@@ -1940,7 +1786,7 @@ fn touch_function_label(function: TouchFunction) -> &'static str {
 
 fn battery_summary(battery: Option<melobudsnext::protocol::readings::Battery>) -> String {
     match battery {
-        Some(battery) => format!("{} / {} / {}", battery.left, battery.right, battery.case),
+        Some(battery) => format!("L {} · R {}", battery.left, battery.right),
         None => "-/-".to_string(),
     }
 }
@@ -1977,11 +1823,6 @@ fn panel_style(_theme: &Theme) -> container::Style {
             color: BORDER,
             width: 1.0,
             radius: 16.0.into(),
-        },
-        shadow: Shadow {
-            color: Color::from_rgba(0.0, 0.0, 0.0, 0.28),
-            offset: Vector::new(0.0, 8.0),
-            blur_radius: 22.0,
         },
         ..Default::default()
     }
@@ -2025,17 +1866,6 @@ fn track_style(_theme: &Theme) -> container::Style {
 fn divider_style(_theme: &Theme) -> container::Style {
     container::Style {
         background: Some(Color { a: 0.7, ..BORDER }.into()),
-        ..Default::default()
-    }
-}
-
-fn logo_style(_theme: &Theme) -> container::Style {
-    container::Style {
-        background: Some(ACCENT.into()),
-        border: Border {
-            radius: 10.0.into(),
-            ..Default::default()
-        },
         ..Default::default()
     }
 }

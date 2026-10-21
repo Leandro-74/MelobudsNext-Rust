@@ -68,11 +68,10 @@ fn decodes_battery_and_firmware_readings() {
     assert_eq!(battery.left.percent(), 80);
     assert!(battery.left.charging());
     assert_eq!(battery.right.percent(), 70);
-    assert!(battery.case.is_unknown());
 
-    let without_case = Battery::parse(&bytes("50 46")).unwrap();
-    assert_eq!(without_case.left.percent(), 80);
-    assert!(without_case.case.is_unknown());
+    let short = Battery::parse(&bytes("50 46")).unwrap();
+    assert_eq!(short.left.percent(), 80);
+    assert_eq!(short.right.percent(), 70);
 
     let firmware = FirmwareVersion::parse(&bytes("02 00 06")).unwrap();
     assert_eq!(firmware.to_string(), "2.0.6");
