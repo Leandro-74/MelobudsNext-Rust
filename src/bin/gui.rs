@@ -185,25 +185,38 @@ impl TouchOption {
         Self(TouchFunction::HoldCall),
         Self(TouchFunction::AncMode),
     ];
+
+    /// Options shown by the selector for the value currently stored.
+    ///
+    /// A function reported by the firmware that this interface does not know is
+    /// appended to the list so the stored value is visible instead of leaving
+    /// the selector blank. Choosing it writes the same byte back.
+    fn options(current: TouchFunction) -> Vec<Self> {
+        let mut options = Self::ALL.to_vec();
+        if let TouchFunction::Unknown(value) = current {
+            options.push(Self(TouchFunction::Unknown(value)));
+        }
+        options
+    }
 }
 
 impl fmt::Display for TouchOption {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(match self.0 {
-            TouchFunction::None => "Nenhuma",
-            TouchFunction::PlayPause => "Reproduzir / pausar",
-            TouchFunction::Previous => "Faixa anterior",
-            TouchFunction::Next => "Próxima faixa",
-            TouchFunction::VoiceAssistant => "Assistente de voz",
-            TouchFunction::VolumeUp => "Aumentar volume",
-            TouchFunction::VolumeDown => "Diminuir volume",
-            TouchFunction::ToggleGameMode => "Alternar modo jogo",
-            TouchFunction::AnswerCall => "Atender chamada",
-            TouchFunction::RejectCall => "Rejeitar chamada",
-            TouchFunction::HoldCall => "Segurar chamada",
-            TouchFunction::AncMode => "Alternar ANC",
-            TouchFunction::Unknown(_) => "Desconhecida",
-        })
+        match self.0 {
+            TouchFunction::None => formatter.write_str("Nenhuma"),
+            TouchFunction::PlayPause => formatter.write_str("Reproduzir / pausar"),
+            TouchFunction::Previous => formatter.write_str("Faixa anterior"),
+            TouchFunction::Next => formatter.write_str("Próxima faixa"),
+            TouchFunction::VoiceAssistant => formatter.write_str("Assistente de voz"),
+            TouchFunction::VolumeUp => formatter.write_str("Aumentar volume"),
+            TouchFunction::VolumeDown => formatter.write_str("Diminuir volume"),
+            TouchFunction::ToggleGameMode => formatter.write_str("Alternar modo jogo"),
+            TouchFunction::AnswerCall => formatter.write_str("Atender chamada"),
+            TouchFunction::RejectCall => formatter.write_str("Rejeitar chamada"),
+            TouchFunction::HoldCall => formatter.write_str("Segurar chamada"),
+            TouchFunction::AncMode => formatter.write_str("Alternar ANC"),
+            TouchFunction::Unknown(value) => write!(formatter, "Desconhecida (0x{value:02X})"),
+        }
     }
 }
 
@@ -1327,10 +1340,8 @@ fn touch_tab(app: &App) -> Element<'_, Message> {
         let mut rows = column![].spacing(9);
         for (index, key) in keys.into_iter().enumerate() {
             let current = app.touch_draft.get(key);
-            let selected = TouchOption::ALL
-                .iter()
-                .copied()
-                .find(|option| option.0 == current);
+            let options = TouchOption::options(current);
+            let selected = options.iter().copied().find(|option| option.0 == current);
             rows = rows.push(
                 row![
                     text(format!(
@@ -1341,7 +1352,7 @@ fn touch_tab(app: &App) -> Element<'_, Message> {
                     .size(11)
                     .color(MUTED)
                     .width(Length::Fixed(66.0)),
-                    pick_list(TouchOption::ALL.to_vec(), selected, move |option| {
+                    pick_list(options, selected, move |option| {
                         Message::TouchChanged(key, option)
                     })
                     .padding([8, 10])
@@ -2415,6 +2426,27 @@ mod tests {
     fn online_app() -> super::App {
         let (app, _) = super::App::build(Config::default(), None, false);
         app
+    }
+
+    #[test]
+    fn shows_unknown_touch_functions_in_the_selector() {
+        use melobudsnext::protocol::touch::TouchFunction;
+
+        let function = TouchFunction::Unknown(0x42);
+        let options = super::TouchOption::options(function);
+
+        assert_eq!(options.len(), super::TouchOption::ALL.len() + 1);
+        let unknown = options
+            .iter()
+            .find(|option| option.0 == function)
+            .expect("unknown function must be selectable");
+        assert_eq!(unknown.to_string(), "Desconhecida (0x42)");
+
+        // Known values must not grow the list.
+        assert_eq!(
+            super::TouchOption::options(TouchFunction::Next).len(),
+            super::TouchOption::ALL.len()
+        );
     }
 
     #[test]
