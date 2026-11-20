@@ -50,6 +50,8 @@ const VIOLET: Color = Color::from_rgb(0.604, 0.549, 1.0);
 const AMBER: Color = Color::from_rgb(1.0, 0.784, 0.341);
 const DANGER: Color = Color::from_rgb(1.0, 0.478, 0.478);
 
+const OFFLINE_NOTICE: &str = "Modo offline: as ações do fone estão desativadas para demonstração.";
+
 fn bold() -> Font {
     Font {
         weight: iced::font::Weight::Bold,
@@ -233,6 +235,27 @@ enum Message {
     ApplyRename,
 }
 
+impl Message {
+    /// Whether the message would trigger a BLE write or link change.
+    fn is_device_action(&self) -> bool {
+        matches!(
+            self,
+            Self::Connect
+                | Self::Refresh
+                | Self::Disconnect
+                | Self::ApplyAnc
+                | Self::ToggleGame(_)
+                | Self::ToggleSleep(_)
+                | Self::ToggleLdac(_)
+                | Self::ApplyBalance
+                | Self::VolumeSelected(_)
+                | Self::ApplyTouch
+                | Self::ApplyWear
+                | Self::ApplyRename
+        )
+    }
+}
+
 struct App {
     session: Session,
     connected: bool,
@@ -285,7 +308,7 @@ impl App {
             state: DeviceState::default(),
             tab: Tab::Status,
             notice: if offline {
-                Some("Modo offline: conexões BLE desativadas para demonstração.".to_string())
+                Some(OFFLINE_NOTICE.to_string())
             } else {
                 None
             },
@@ -316,7 +339,9 @@ impl App {
     }
 
     fn dispatch(&mut self, label: impl Into<String>, action: Action) -> Task<Message> {
-        if self.busy.is_some() {
+        // Defense in depth: the update handler already rejects device actions
+        // in offline mode, so a write can never reach the session here.
+        if self.offline || self.busy.is_some() {
             return Task::none();
         }
 
@@ -327,6 +352,12 @@ impl App {
 
         let session = self.session.clone();
         Task::perform(async move { session.run(action).await }, Message::Finished)
+    }
+
+    /// Controls that write to the headphones are only active while online and
+    /// no other action is running.
+    fn controls_enabled(&self) -> bool {
+        !self.offline && self.busy.is_none()
     }
 
     fn finish(&mut self, result: ActionResult) -> Task<Message> {
@@ -445,13 +476,17 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
         return Task::none();
     }
 
+    // Offline mode is for layout previews and screenshots: local drafts still
+    // react, but every device action is rejected before it can fail with a
+    // "not connected" error.
+    if app.offline && message.is_device_action() {
+        app.error = None;
+        app.notice = Some(OFFLINE_NOTICE.to_string());
+        return Task::none();
+    }
+
     match message {
         Message::Connect => {
-            if app.offline {
-                app.notice =
-                    Some("Modo offline: conexões BLE desativadas para demonstração.".to_string());
-                return Task::none();
-            }
             let address = app.address_input.trim().to_string();
             if address.is_empty() {
                 app.error = Some("Informe o MAC ou o ID do fone para conectar.".to_string());
@@ -719,18 +754,18 @@ fn header(app: &App) -> Element<'_, Message> {
         controls = controls.push(secondary_button(
             "Atualizar",
             Message::Refresh,
-            app.busy.is_none(),
+            app.controls_enabled(),
         ));
         controls = controls.push(danger_button(
             "Desconectar",
             Message::Disconnect,
-            app.busy.is_none(),
+            app.controls_enabled(),
         ));
     } else {
         controls = controls.push(primary_button(
             "Conectar",
             Message::Connect,
-            app.busy.is_none() && !app.offline && !app.address_input.trim().is_empty(),
+            app.controls_enabled() && !app.address_input.trim().is_empty(),
         ));
     }
 
@@ -1056,7 +1091,7 @@ fn status_tab(app: &App) -> Element<'_, Message> {
                         .size(13)
                         .width(Length::Fill)
                         .style(input_style),
-                    primary_button("Aplicar", Message::ApplyRename, app.busy.is_none()),
+                    primary_button("Aplicar", Message::ApplyRename, app.controls_enabled()),
                 ]
                 .spacing(8)
                 .align_y(Alignment::Center),
@@ -1177,7 +1212,7 @@ fn anc_tab(app: &App) -> Element<'_, Message> {
             .align_y(Alignment::Center),
         ),
         row![
-            primary_button("Aplicar ANC", Message::ApplyAnc, app.busy.is_none()),
+            primary_button("Aplicar ANC", Message::ApplyAnc, app.controls_enabled()),
             text("A alteração é imediata e pode ser sentida nos fones.")
                 .size(10)
                 .color(MUTED),
@@ -1199,21 +1234,21 @@ fn audio_tab(app: &App) -> Element<'_, Message> {
                     "LDAC",
                     "Áudio de alta resolução. Alternar reinicia a conexão BLE.",
                     app.state.ldac,
-                    app.busy.is_none(),
+                    app.controls_enabled(),
                     Message::ToggleLdac,
                 ),
                 toggle_row(
                     "Modo jogo",
                     "Reduz a latência para jogos e vídeos.",
                     app.state.game_mode,
-                    app.busy.is_none(),
+                    app.controls_enabled(),
                     Message::ToggleGame,
                 ),
                 toggle_row(
                     "Modo sono",
                     "Perfil de áudio suave para dormir.",
                     app.state.sleep_mode,
-                    app.busy.is_none(),
+                    app.controls_enabled(),
                     Message::ToggleSleep,
                 ),
             ]
@@ -1236,7 +1271,11 @@ fn audio_tab(app: &App) -> Element<'_, Message> {
                     horizontal_space(),
                     text("DIREITO").size(9).font(bold()).color(MUTED),
                 ],
-                primary_button("Aplicar balanço", Message::ApplyBalance, app.busy.is_none()),
+                primary_button(
+                    "Aplicar balanço",
+                    Message::ApplyBalance,
+                    app.controls_enabled()
+                ),
             ]
             .spacing(10),
         ),
@@ -1329,12 +1368,12 @@ fn touch_tab(app: &App) -> Element<'_, Message> {
             primary_button(
                 "Aplicar mapa de toque",
                 Message::ApplyTouch,
-                app.busy.is_none()
+                app.controls_enabled()
             ),
             secondary_button(
                 "Descartar alterações",
                 Message::ResetTouch,
-                app.busy.is_none()
+                app.controls_enabled()
             ),
             text("O mapa é gravado direto na characteristic 0000000D.")
                 .size(10)
@@ -1379,7 +1418,7 @@ fn wear_tab(app: &App) -> Element<'_, Message> {
                     number_field("Tom", &app.wear_tone, Message::WearToneChanged),
                 ]
                 .spacing(10),
-                primary_button("Aplicar configuração", Message::ApplyWear, app.busy.is_none()),
+                primary_button("Aplicar configuração", Message::ApplyWear, app.controls_enabled()),
             ]
             .spacing(10),
         ),
@@ -2337,5 +2376,68 @@ mod tests {
                 "value {value:?} should enable offline mode"
             );
         }
+    }
+
+    fn offline_app() -> super::App {
+        let (app, _) = super::App::build(Config::default(), None, true);
+        app
+    }
+
+    #[test]
+    fn offline_mode_blocks_every_device_action() {
+        use super::{Message, NotificationVolume, VolumeOption, OFFLINE_NOTICE};
+
+        let actions = [
+            Message::Connect,
+            Message::Refresh,
+            Message::Disconnect,
+            Message::ApplyAnc,
+            Message::ToggleGame(true),
+            Message::ToggleSleep(false),
+            Message::ToggleLdac(true),
+            Message::ApplyBalance,
+            Message::VolumeSelected(VolumeOption(NotificationVolume::Medium)),
+            Message::ApplyTouch,
+            Message::ApplyWear,
+            Message::ApplyRename,
+        ];
+
+        for action in actions {
+            let mut app = offline_app();
+            app.notice = None;
+
+            let _ = super::update(&mut app, action);
+
+            assert!(app.busy.is_none(), "offline action started a BLE task");
+            assert!(app.error.is_none(), "offline action produced an error");
+            assert_eq!(app.notice.as_deref(), Some(OFFLINE_NOTICE));
+        }
+    }
+
+    #[test]
+    fn offline_mode_does_not_change_toggles_optimistically() {
+        use super::Message;
+
+        let mut app = offline_app();
+        app.state.game_mode = false;
+        app.state.ldac = false;
+
+        let _ = super::update(&mut app, Message::ToggleGame(true));
+        let _ = super::update(&mut app, Message::ToggleLdac(true));
+
+        assert!(!app.state.game_mode);
+        assert!(!app.state.ldac);
+    }
+
+    #[test]
+    fn offline_mode_still_allows_local_drafts() {
+        use super::Message;
+
+        let mut app = offline_app();
+        let _ = super::update(&mut app, Message::Tab(super::Tab::Audio));
+        let _ = super::update(&mut app, Message::BalanceChanged(30));
+
+        assert_eq!(app.tab, super::Tab::Audio);
+        assert_eq!(app.balance, 30);
     }
 }

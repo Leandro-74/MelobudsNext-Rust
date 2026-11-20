@@ -128,8 +128,10 @@ cargo run --bin melobudsnext-gui -- --offline
 `melobudsnext-gui --help` lista as flags disponíveis (`--offline` e
 `--config PATH`) e `--version` imprime a versão do pacote. O mesmo modo offline
 pode ser ativado com `MELOBUDNEXT_GUI_OFFLINE=1` (valores como `true`, `yes` e
-`on` também ligam; `0`, `false`, `no`, `off` e vazio desligam).
-Nele o botão de conexão fica desabilitado e o rodapé mostra um aviso.
+`on` também ligam; `0`, `false`, `no`, `off` e vazio desligam). Nesse modo o
+botão de conexão e todos os controles que gravam no fone ficam desabilitados; os
+rascunhos locais (abas, sliders e seletores) continuam respondendo e o rodapé
+mostra um aviso.
 
 A janela tem tamanho fixo de 1200x800 (layout de dashboard) e usa o renderer
 **tiny-skia** (CPU). O wgpu não foi usado porque, neste ambiente, ele abria uma
