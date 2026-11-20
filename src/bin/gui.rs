@@ -252,7 +252,7 @@ impl App {
         let target = config.mac_address.clone();
         let address_input = target.clone().unwrap_or_default();
         let offline = std::env::args().any(|argument| argument == "--offline")
-            || std::env::var_os("MELOBUDNEXT_GUI_OFFLINE").is_some();
+            || offline_flag(std::env::var("MELOBUDNEXT_GUI_OFFLINE").ok().as_deref());
 
         let mut app = Self {
             session: Session::new(config.uuids.clone(), target.clone()),
@@ -2146,6 +2146,20 @@ fn scrollable_style(_theme: &Theme, _status: scrollable::Status) -> scrollable::
 // Entry point
 // ---------------------------------------------------------------------------
 
+/// Interprets `MELOBUDNEXT_GUI_OFFLINE` as a boolean instead of a presence
+/// flag, so `0`, `false`, `no`, `off` and an empty value keep the GUI online.
+/// Unrecognized non-empty values are treated as enabled for backwards
+/// compatibility with `MELOBUDNEXT_GUI_OFFLINE=anything`.
+fn offline_flag(value: Option<&str>) -> bool {
+    match value {
+        None => false,
+        Some(value) => !matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "" | "0" | "false" | "no" | "off"
+        ),
+    }
+}
+
 fn main() -> iced::Result {
     iced::application("MelobudsNext - QCY Melobuds Pro", update, view)
         .theme(theme)
@@ -2155,4 +2169,37 @@ fn main() -> iced::Result {
             ..Default::default()
         })
         .run_with(App::new)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::offline_flag;
+
+    #[test]
+    fn treats_absent_or_false_values_as_online() {
+        for value in [
+            None,
+            Some(""),
+            Some("   "),
+            Some("0"),
+            Some("false"),
+            Some("NO"),
+            Some("off"),
+        ] {
+            assert!(
+                !offline_flag(value),
+                "value {value:?} should keep the GUI online"
+            );
+        }
+    }
+
+    #[test]
+    fn treats_explicit_truthy_values_as_offline() {
+        for value in [Some("1"), Some("true"), Some("YES"), Some(" on ")] {
+            assert!(
+                offline_flag(value),
+                "value {value:?} should enable offline mode"
+            );
+        }
+    }
 }
