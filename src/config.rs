@@ -268,6 +268,81 @@ mod tests {
     }
 
     #[test]
+    fn invalid_json_is_reported_as_invalid_data() {
+        let directory = temporary_directory();
+        let path = directory.join("config.json");
+        fs::create_dir_all(&directory).unwrap();
+        fs::write(&path, "{not json").unwrap();
+
+        let error = Config::load_from(&path).unwrap_err();
+
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn unreadable_path_returns_an_error() {
+        let directory = temporary_directory();
+        fs::create_dir_all(&directory).unwrap();
+
+        // Reading a directory as a file must fail instead of returning defaults.
+        assert!(Config::load_from(&directory).is_err());
+
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn save_replaces_a_corrupted_file() {
+        let directory = temporary_directory();
+        let path = directory.join("config.json");
+        fs::create_dir_all(&directory).unwrap();
+        fs::write(&path, "{not json").unwrap();
+        let config = Config::default().with_mac("AA:BB:CC:DD:EE:FF");
+
+        config.save_to(&path).unwrap();
+
+        assert_eq!(Config::load_from(&path).unwrap(), config);
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn save_reports_a_directory_creation_failure() {
+        let directory = temporary_directory();
+        fs::create_dir_all(&directory).unwrap();
+        let blocker = directory.join("blocker");
+        fs::write(&blocker, b"not a directory").unwrap();
+
+        let error = Config::default()
+            .save_to(blocker.join("config.json"))
+            .unwrap_err();
+
+        // The concrete kind varies between Unix and Windows.
+        assert_ne!(error.kind(), io::ErrorKind::NotFound);
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn permission_errors_are_propagated() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = temporary_directory();
+        let path = directory.join("config.json");
+        Config::default().save_to(&path).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o000)).unwrap();
+
+        let result = Config::load_from(&path);
+
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+        fs::remove_dir_all(directory).unwrap();
+
+        // Root bypasses file permissions, so only assert when they apply.
+        if let Err(error) = result {
+            assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+        }
+    }
+
+    #[test]
     fn fills_missing_fields_with_defaults() {
         let directory = temporary_directory();
         let path = directory.join("config.json");
