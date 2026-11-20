@@ -527,30 +527,87 @@ Levantamento feito a partir da análise do repositório no commit `4028131`
 
 ## Plano de execução em lotes
 
-### Fluxo de trabalho
+### Regras do ciclo de vida de um lote
 
-- **Lote 0** é aplicado direto na `main`, um commit atômico por item. Só entram
-  aqui mudanças pequenas, isoladas e de baixo risco. Se um item crescer ou
-  exigir refatoração, ele é movido para o lote correspondente.
-- **Demais lotes** usam uma branch própria, criada a partir da `main` já com o
-  lote anterior integrado. Sugestão de nomes em `kebab-case` com prefixo de
-  tipo (`fix/`, `refactor/`, `feat/`, `perf/`, `chore/`).
-- **Commits**: atômicos por item, no formato `<tipo>[escopo]: <descrição em
-  pt-BR>`, sem mencionar ferramentas de IA.
-- **Gate obrigatório antes de qualquer merge**:
-  1. `cargo fmt --check`
-  2. `cargo clippy --all-targets -- -D warnings`
-  3. `cargo test --all-targets`
-  4. `cargo build --release` (os dois binários)
-  5. Checklist manual com hardware nos lotes que alteram o fluxo BLE
-     (TST-07).
-- **Merge**: após validação, `git merge --no-ff <branch>` na `main`, repetir o
-  gate na `main` e apagar a branch.
-- **Sequencialidade**: não iniciar um lote antes do merge do anterior. Vários
-  lotes tocam `src/bin/gui.rs` e `src/bin/gui/ble_task.rs`, e a ordem abaixo
-  evita conflitos.
-- **Testes de regressão**: cada correção (COR-*) leva junto o teste que a fixa
-  (TST-06 é transversal e se aplica a todos os lotes).
+Estas regras são específicas do plano em lotes e podem ser removidas quando o
+plano for concluído.
+
+#### Abertura da sessão
+
+1. Ler `AGENTS.md`, `README.md`, `PROTOCOLO_MelobudsNext.md` e este arquivo.
+2. Confirmar que a `main` está limpa (`git status --short` vazio) e que já
+   contém o lote anterior (`git log`).
+3. Confirmar na tabela "Ordem, dependências e status" a branch, as dependências
+   e os itens do lote.
+4. Criar a branch a partir da `main` atual (exceto o Lote 0, aplicado direto na
+   `main`).
+5. Registrar no início do relatório da sessão: lote, branch e escopo.
+
+#### Durante o lote
+
+- Implementar apenas os itens listados para o lote; não adiantar itens de lotes
+  futuros.
+- Commit atômico por item, no formato definido no `AGENTS.md`.
+- Toda correção leva teste de regressão; toda funcionalidade leva teste novo.
+- Descoberta fora do escopo: registrar um item novo neste documento (com ID e
+  prioridade) em vez de implementá-lo de passagem. Se bloquear o lote, registrar
+  a decisão nas notas.
+- Se for necessário mudar dependência, ordem ou escopo, atualizar este documento
+  no mesmo commit da mudança.
+- Manter `README.md`, `PROTOCOLO_MelobudsNext.md` e doc comments atualizados
+  junto com o código.
+
+#### Encerramento obrigatório
+
+Nenhum lote é considerado concluído antes de:
+
+1. **Funcionalidade completa**: todos os itens entregues; o que não for
+   concluído precisa ser explicitamente movido para um item novo, com motivo.
+2. **Gate completo**: `cargo fmt --check`,
+   `cargo clippy --all-targets -- -D warnings`, `cargo test --all-targets` e
+   `cargo build --release`.
+3. **Validação manual** (quando o lote tocar BLE/GUI): executar o checklist
+   aplicável e registrar plataforma e firmware.
+4. **Documentação**: atualizações de README/protocolo/doc comments incluídas.
+5. **Status atualizado** na tabela, com commit e data.
+6. **Notas de implementação** adicionadas (template abaixo).
+7. **Merge na `main`** com `git merge --no-ff <branch>`, gate repetido na
+   `main` e branch apagada.
+8. **`main` limpa**: `git status` sem alterações, sem arquivos não rastreados e
+   sem branches de lote pendentes.
+
+#### Atualização do status
+
+- Ao abrir o lote: `Pendente` → `Em andamento`.
+- Ao encerrar: `Implementado` + commit curto + data, por exemplo
+  `Implementado (a1b2c3d, 2026-11-20)`.
+- Item movido ou descartado: registrar o motivo na seção de notas do lote.
+
+#### Notas de implementação (anedotas)
+
+Cada lote encerrado adiciona uma subseção em **"Notas de implementação por
+lote"** com:
+
+- decisões tomadas e o porquê;
+- armadilhas encontradas (firmware, btleplug, iced, plataforma);
+- efeitos colaterais e dívidas criadas;
+- recomendações para os próximos lotes.
+
+Se não houver nada relevante, escrever "Sem notas".
+
+#### Interrupção da sessão
+
+Se a sessão terminar sem concluir o lote: manter a branch, **não** fazer merge,
+mudar o status para `Em andamento` e listar no relatório o que falta e onde
+parou.
+
+#### Push e paralelismo
+
+- Nunca fazer push; o usuário publica manualmente.
+- Executar um lote por vez no mesmo diretório. Se houver sessões em paralelo,
+  usar worktrees e respeitar a ordem de merge da tabela.
+- Não iniciar o próximo lote antes do merge do anterior, exceto quando a tabela
+  indicar independência explícita.
 
 ### Lote 0 — Correções rápidas direto na `main`
 
@@ -744,3 +801,40 @@ Um item do lote 0 só permanece na `main` se:
 
 Caso contrário, o item é movido para o lote temático correspondente e segue o
 fluxo de branch.
+
+## Notas de implementação por lote
+
+Cada sessão adiciona aqui a subseção do lote concluído, antes do merge.
+
+### Modelo
+
+```markdown
+#### Lote N — <nome>
+- **Status:** Implementado
+- **Branch:** `<branch>` (ou `main` no Lote 0)
+- **Commits:** `abc1234`, `def5678`
+- **Validação:** gate completo; hardware: <plataforma/firmware ou "não aplicável">
+- **Notas:**
+  - decisão/armadilha/efeito colateral relevante para os próximos lotes
+  - ...
+```
+
+## Checklist de release (após o Lote 7)
+
+Pré-requisitos: Lotes 0–7 concluídos, `main` limpa, gate verde e limitações
+conhecidas documentadas.
+
+1. Definir a versão (`0.2.0` por padrão; `1.0.0` apenas com PRO-03 validada em
+   hardware).
+2. Atualizar `Cargo.toml` + `Cargo.lock` e criar/atualizar `CHANGELOG.md`.
+3. Rodar o gate completo e gerar os binários com `cargo build --release`.
+4. Gerar artefatos: Linux x86_64 (`.tar.gz` com os dois binários e `.desktop`),
+   Windows x86_64 (`.zip`) e checksums SHA-256.
+5. Criar tag anotada `vX.Y.Z`.
+6. Publicar release no GitHub com notas e limitações conhecidas (ex.: `0x28`,
+   estado ao vivo da GUI, firmware 2.0.6 e status da validação Linux).
+7. Push manual da `main` e da tag; depois `gh release create`.
+8. AUR/PKGBUILD como passo separado, se aplicável.
+
+Não assinar código (não há certificado) e não publicar artefatos de plataformas
+não validadas (macOS).
