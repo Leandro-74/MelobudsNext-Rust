@@ -11,6 +11,7 @@ mod ble_task;
 use std::fmt;
 
 use ble_task::{Action, ActionResult, Session};
+use clap::Parser;
 use melobudsnext::config::Config;
 use melobudsnext::protocol::anc::{AncMode, AncScene, TransparencyMode};
 use melobudsnext::protocol::commands::{self, NotificationVolume, WearDetection};
@@ -60,6 +61,23 @@ fn medium() -> Font {
         weight: iced::font::Weight::Medium,
         ..Font::DEFAULT
     }
+}
+
+// ---------------------------------------------------------------------------
+// Command line
+// ---------------------------------------------------------------------------
+
+/// Options accepted by the graphical interface.
+#[derive(Debug, Parser)]
+#[command(
+    name = "melobudsnext-gui",
+    version,
+    about = "Painel gráfico para o QCY Melobuds Pro"
+)]
+struct Cli {
+    /// Abre a interface sem acessar o Bluetooth (demonstração e capturas).
+    #[arg(long)]
+    offline: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -240,7 +258,7 @@ struct App {
 }
 
 impl App {
-    fn new() -> (Self, Task<Message>) {
+    fn new(cli: Cli) -> (Self, Task<Message>) {
         let (config, config_error) = match Config::load() {
             Ok(config) => (config, None),
             Err(error) => (
@@ -249,10 +267,15 @@ impl App {
             ),
         };
 
+        let offline =
+            cli.offline || offline_flag(std::env::var("MELOBUDNEXT_GUI_OFFLINE").ok().as_deref());
+
+        Self::build(config, config_error, offline)
+    }
+
+    fn build(config: Config, config_error: Option<String>, offline: bool) -> (Self, Task<Message>) {
         let target = config.mac_address.clone();
         let address_input = target.clone().unwrap_or_default();
-        let offline = std::env::args().any(|argument| argument == "--offline")
-            || offline_flag(std::env::var("MELOBUDNEXT_GUI_OFFLINE").ok().as_deref());
 
         let mut app = Self {
             session: Session::new(config.uuids.clone(), target.clone()),
@@ -2161,6 +2184,8 @@ fn offline_flag(value: Option<&str>) -> bool {
 }
 
 fn main() -> iced::Result {
+    let cli = Cli::parse();
+
     iced::application("MelobudsNext - QCY Melobuds Pro", update, view)
         .theme(theme)
         .window(iced::window::Settings {
@@ -2168,12 +2193,44 @@ fn main() -> iced::Result {
             resizable: false,
             ..Default::default()
         })
-        .run_with(App::new)
+        .run_with(move || App::new(cli))
 }
 
 #[cfg(test)]
 mod tests {
-    use super::offline_flag;
+    use super::{offline_flag, Cli};
+    use clap::Parser;
+
+    #[test]
+    fn parses_the_offline_flag_with_clap() {
+        let cli = Cli::try_parse_from(["melobudsnext-gui", "--offline"]).unwrap();
+        assert!(cli.offline);
+
+        let cli = Cli::try_parse_from(["melobudsnext-gui"]).unwrap();
+        assert!(!cli.offline);
+    }
+
+    #[test]
+    fn rejects_positional_arguments_instead_of_ignoring_them() {
+        assert!(Cli::try_parse_from(["melobudsnext-gui", "unexpected"]).is_err());
+    }
+
+    #[test]
+    fn exposes_help_and_version() {
+        use clap::CommandFactory;
+
+        assert_eq!(
+            Cli::try_parse_from(["melobudsnext-gui", "--help"])
+                .unwrap_err()
+                .kind(),
+            clap::error::ErrorKind::DisplayHelp
+        );
+
+        let mut command = Cli::command();
+        let help = command.render_help().to_string();
+        assert!(help.contains("--offline"), "help was: {help}");
+        assert_eq!(command.get_version(), Some(env!("CARGO_PKG_VERSION")));
+    }
 
     #[test]
     fn treats_absent_or_false_values_as_online() {
