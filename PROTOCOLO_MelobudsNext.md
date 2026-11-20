@@ -1,4 +1,4 @@
-121# MelobudsNext: Documentação do Protocolo BLE
+# MelobudsNext: Documentação do Protocolo BLE
 
 Documentação do protocolo de comunicação entre o computador e o fone **QCY Melobuds Pro**, extraída da análise do código-fonte do projeto MelobudsNext (versão 1.1.0). Os valores foram validados por engenharia reversa, com o app oficial usado como oráculo. Quando a documentação de terceiros divergia dos bytes observados, o projeto adotou os bytes.
 
