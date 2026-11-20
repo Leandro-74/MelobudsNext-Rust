@@ -116,7 +116,9 @@ Se houver um `mac_address` na configuração, a GUI tenta conectar sozinha ao
 abrir. O cabeçalho permite conectar, atualizar e desconectar; as abas cobrem
 status, ANC, áudio (LDAC, modo jogo/sono, balanço), toque e detecção de uso.
 LDAC e os modos jogo/sono são enviados na hora; ANC, sliders, mapa de toque e
-nome usam um rascunho local e o botão **Aplicar**.
+nome usam um rascunho local e o botão **Aplicar**. Depois de um comando
+bem-sucedido, o valor escolhido permanece na interface mesmo quando o firmware
+não devolve o eco dentro da janela de escuta.
 
 Para abrir a interface sem acessar o Bluetooth (útil para conferir o layout ou
 gravar capturas), use:
