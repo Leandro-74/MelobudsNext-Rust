@@ -777,7 +777,7 @@ documentação.
 
 | Lote | Branch | Depende de | Itens | Status |
 | --- | --- | --- | --- | --- |
-| 0 | `main` | — | 12 | Pendente |
+| 0 | `main` | — | 12 | Implementado (e5c4d0e, 2026-11-19) |
 | 1 | `fix/robustez-gui` | 0 | 9 | Pendente |
 | 2 | `refactor/controlador-transporte` | 1 | 4 | Pendente |
 | 3 | `perf/sincronizacao-notificacoes` | 2 | 4 | Pendente |
@@ -818,6 +818,38 @@ Cada sessão adiciona aqui a subseção do lote concluído, antes do merge.
   - decisão/armadilha/efeito colateral relevante para os próximos lotes
   - ...
 ```
+
+#### Lote 0 — Correções rápidas direto na `main`
+
+- **Status:** Implementado
+- **Branch:** `main`
+- **Commits:** `08d1fd7`, `2a97110`, `c7850db`, `7052885`, `086470e`,
+  `9ad629b`, `6653b98`, `c7d4b39`, `d02a9c2`, `101e2d6`, `4efd8e5`, `e5c4d0e`
+- **Validação:** gate completo na `main` (`cargo fmt --check`, `cargo clippy
+  --all-targets -- -D warnings`, `cargo test --all-targets` com 70 testes
+  unitários + 2 da GUI + 6 de integração, `cargo build --release`); hardware:
+  não aplicável.
+- **Notas:**
+  - `MELOBUDNEXT_GUI_OFFLINE` passou a interpretar valores: `0`, `false`, `no`,
+    `off` e vazio desligam; qualquer outro valor não vazio liga, preservando o
+    comportamento antigo de presença para valores desconhecidos.
+  - `Packet::try_encode` devolve `ProtocolError::ParamsTooLong`; `encode`
+    permanece como atalho documentado que entra em pânico e
+    `BleSession::write_command` usa a variante falível.
+  - `Config::default_path` agora retorna `io::Result<PathBuf>` e falha com
+    mensagem clara quando não há `HOME`/`USERPROFILE`, em vez de gravar no
+    diretório atual. A escrita usa um `.tmp` no mesmo diretório e `rename`,
+    removendo o temporário quando o rename falha.
+  - A CI roda o gate em `ubuntu-latest` e `windows-latest`; no Linux instala
+    `libdbus-1-dev` (btleplug/bluez), `pkg-config`, `libxkbcommon-dev` e
+    `libwayland-dev`.
+  - Dívidas criadas: a escrita atômica não preserva as permissões do arquivo
+    original; `main.rs` ainda usa `Packet::encode` para pacotes montados
+    localmente (parâmetros já validados); o teste de permissão da configuração
+    não valida a negação quando a suíte roda como root.
+  - Recomendação para o Lote 1: o parser de argumentos da GUI (COR-10) pode
+    absorver `--offline` e a leitura de `MELOBUDNEXT_GUI_OFFLINE` em um único
+    ponto.
 
 ## Checklist de release (após o Lote 7)
 
