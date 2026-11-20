@@ -69,6 +69,8 @@ Exemplo de montagem: o comando Game Mode ligado tem `param_len = 1` e `body_len 
 
 Uma notificação pode trazer mais de um comando concatenado. O parser lê sequencialmente cada bloco `[opcode, param_len, params]` a partir do offset 2. Se um bloco estiver truncado, ele é descartado.
 
+O `body_len` do cabeçalho **não é confiável em pacotes compostos**: ele pode refletir apenas o primeiro bloco (ou um valor fixo do firmware) em vez da soma do corpo inteiro. Exemplo: `FF 06 09 01 01 17 03 00 00 00` traz `body_len = 06`, mas o corpo tem 8 bytes e contém dois blocos (`0x09` com 1 parâmetro e `0x17` com 3). Por isso o parser ignora `body_len` e lê os blocos até o fim dos bytes recebidos, descartando somente o bloco final incompleto. Não valide `body_len` como soma total do corpo.
+
 ### 3.2 Eco de comandos
 
 O fone responde a comandos com uma notificação de eco contendo o mesmo opcode, com o estado resultante. Por exemplo, após enviar Game Mode, o fone notifica `0x09` com o novo valor. É dessa forma que o estado ao vivo é mantido.
