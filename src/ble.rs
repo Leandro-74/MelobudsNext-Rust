@@ -438,16 +438,6 @@ impl BleSession {
         Ok(report)
     }
 
-    /// Sends the initial `0xFE` queries in the documented order.
-    pub async fn query_all(&self) -> Result<()> {
-        for target in QUERY_TARGETS {
-            self.write_command(&commands::query(target)).await?;
-            tokio::time::sleep(QUERY_INTERVAL).await;
-        }
-
-        Ok(())
-    }
-
     /// Writes a packet and collects the notifications it triggers.
     pub async fn exchange(&self, packet: &Packet, listen: Duration) -> Result<Vec<Vec<u8>>> {
         let mut notifications = self.subscribe_commands().await?;
