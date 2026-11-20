@@ -243,6 +243,27 @@ impl BleSession {
         self.peripheral.address().to_string()
     }
 
+    /// Reports whether the underlying BLE link is still up.
+    ///
+    /// Actions call this after writing so a headset that was switched off mid
+    /// session is reported as an error instead of leaving the caller with a
+    /// stale "connected" state.
+    pub async fn is_connected(&self) -> Result<bool> {
+        self.peripheral
+            .is_connected()
+            .await
+            .context("failed to query connection state")
+    }
+
+    /// Fails when the peripheral no longer reports an active link.
+    async fn ensure_link(&self) -> Result<()> {
+        if self.is_connected().await? {
+            Ok(())
+        } else {
+            Err(anyhow!("BLE link lost; connect again"))
+        }
+    }
+
     pub fn notification_uuid(&self) -> Uuid {
         self.notification.uuid
     }
@@ -371,6 +392,8 @@ impl BleSession {
     pub async fn sync(&self, listen: Duration) -> Result<SyncReport> {
         let mut report = SyncReport::default();
 
+        self.ensure_link().await?;
+
         if self.battery.is_some() {
             match self.read_battery().await {
                 Ok(battery) => report.state.set_battery(battery),
@@ -435,6 +458,7 @@ impl BleSession {
             }
         }
 
+        self.ensure_link().await?;
         Ok(report)
     }
 
@@ -442,7 +466,9 @@ impl BleSession {
     pub async fn exchange(&self, packet: &Packet, listen: Duration) -> Result<Vec<Vec<u8>>> {
         let mut notifications = self.subscribe_commands().await?;
         self.write_command(packet).await?;
-        Ok(self.receive_values(&mut notifications, listen).await)
+        let values = self.receive_values(&mut notifications, listen).await;
+        self.ensure_link().await?;
+        Ok(values)
     }
 
     /// Collects command notifications for a bounded amount of time.

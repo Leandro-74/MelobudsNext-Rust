@@ -90,6 +90,7 @@ impl Session {
 
         if let Err(error) = inner.execute(action, &mut result).await {
             result.error = Some(format!("{error:#}"));
+            inner.drop_client_if_link_lost().await;
         }
 
         result.state = inner.state.clone();
@@ -216,6 +217,22 @@ impl SessionInner {
             .ok_or_else(|| anyhow!("fone não conectado; clique em Conectar"))
     }
 
+    /// Discards the client when a failed action also lost the BLE link.
+    ///
+    /// The UI then renders "Desconectado" and the next action asks the user to
+    /// connect again instead of operating on a dead session.
+    async fn drop_client_if_link_lost(&mut self) {
+        let Some(client) = self.client.as_ref() else {
+            return;
+        };
+
+        let link_alive = client.is_connected().await.ok();
+
+        if discards_client(link_alive) {
+            self.client = None;
+        }
+    }
+
     async fn connect_and_sync(&mut self) -> Result<Vec<String>> {
         if let Some(client) = self.client.take() {
             let _ = client.disconnect().await;
@@ -253,5 +270,30 @@ impl SessionInner {
         };
         self.state = report.state;
         Ok(report.warnings)
+    }
+}
+
+/// Whether the session must discard its client after a failed action.
+///
+/// The client is dropped unless the peripheral explicitly confirms that the
+/// link is still up; an inconclusive probe is treated as a lost link so the UI
+/// never keeps showing "Conectado" for a session that cannot be used.
+fn discards_client(link_alive: Option<bool>) -> bool {
+    link_alive != Some(true)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::discards_client;
+
+    #[test]
+    fn discards_the_client_when_the_link_is_gone_or_unknown() {
+        assert!(discards_client(Some(false)));
+        assert!(discards_client(None));
+    }
+
+    #[test]
+    fn keeps_the_client_when_the_link_is_alive() {
+        assert!(!discards_client(Some(true)));
     }
 }

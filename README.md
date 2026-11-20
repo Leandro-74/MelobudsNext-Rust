@@ -208,6 +208,9 @@ Python, faça uma cópia antes, porque ele espera a chave `address`.
   lidas, evitando perder respostas.
 - Depois de mudar LDAC, a conexão é refeita automaticamente (10 tentativas, 3 s
   entre elas), como no cliente Python.
+- Na GUI, cada ação verifica o link ao terminar. Se o fone foi desligado, a
+  sessão é descartada, a interface volta para "Desconectado" e o erro aparece no
+  rodapé em vez de manter um estado antigo.
 - Saída `--json` é JSON puro em `stdout`.
 - Não há TUI; os comandos do CLI são de uma execução só, com `device monitor`
   para acompanhar notificações. A interface gráfica é um binário separado
