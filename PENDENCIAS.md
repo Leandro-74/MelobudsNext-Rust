@@ -525,14 +525,222 @@ Levantamento feito a partir da análise do repositório no commit `4028131`
 
 ---
 
-## Sequência sugerida
+## Plano de execução em lotes
 
-1. **P1 de correção:** COR-03, COR-04, COR-05, COR-06 + testes de regressão
-   (TST-06).
-2. **P1 de estrutura:** REF-01, REF-03 e TST-02 — habilitam testar o resto.
-3. **P2 rápidos:** COR-01, COR-02, COR-07, COR-08, COR-09, COR-10, MEL-01,
-   MEL-02, MEL-04, TST-01, TST-03, TST-04, DOC-01, DOC-02, DOC-03, DOC-05,
-   INF-01, INF-02, INF-03.
-4. **P2 de maior esforço:** REF-02, REF-04, REF-05, IMP-01.
-5. **P3 e dependentes de hardware:** REF-06, IMP-02, IMP-03, MEL-03, TST-05,
-   TST-07, DOC-04, INF-04, INF-05, PRO-01..PRO-04.
+### Fluxo de trabalho
+
+- **Lote 0** é aplicado direto na `main`, um commit atômico por item. Só entram
+  aqui mudanças pequenas, isoladas e de baixo risco. Se um item crescer ou
+  exigir refatoração, ele é movido para o lote correspondente.
+- **Demais lotes** usam uma branch própria, criada a partir da `main` já com o
+  lote anterior integrado. Sugestão de nomes em `kebab-case` com prefixo de
+  tipo (`fix/`, `refactor/`, `feat/`, `perf/`, `chore/`).
+- **Commits**: atômicos por item, no formato `<tipo>[escopo]: <descrição em
+  pt-BR>`, sem mencionar ferramentas de IA.
+- **Gate obrigatório antes de qualquer merge**:
+  1. `cargo fmt --check`
+  2. `cargo clippy --all-targets -- -D warnings`
+  3. `cargo test --all-targets`
+  4. `cargo build --release` (os dois binários)
+  5. Checklist manual com hardware nos lotes que alteram o fluxo BLE
+     (TST-07).
+- **Merge**: após validação, `git merge --no-ff <branch>` na `main`, repetir o
+  gate na `main` e apagar a branch.
+- **Sequencialidade**: não iniciar um lote antes do merge do anterior. Vários
+  lotes tocam `src/bin/gui.rs` e `src/bin/gui/ble_task.rs`, e a ordem abaixo
+  evita conflitos.
+- **Testes de regressão**: cada correção (COR-*) leva junto o teste que a fixa
+  (TST-06 é transversal e se aplica a todos os lotes).
+
+### Lote 0 — Correções rápidas direto na `main`
+
+**Branch:** nenhuma (`main`)
+**Dependências:** nenhuma
+**Objetivo:** eliminar defeitos triviais e preparar a base antes das branches.
+
+| Item | Categoria | Justificativa para ir direto na main |
+| --- | --- | --- |
+| COR-01 | Correção | Uma linha de Markdown; sem impacto em código |
+| COR-02 | Correção | Alteração pontual na leitura da variável de ambiente, com teste pequeno |
+| COR-08 | Correção | `try_encode` localizado no framing, com teste pequeno |
+| COR-09 | Correção | Escrita atômica isolada em `config.rs`, com teste pequeno |
+| REF-06 | Refatoração | Remoção de método público sem uso |
+| MEL-04 | Melhoria | Fallback de diretório isolado em `config.rs` |
+| TST-04 | Teste | Testes de erro da configuração |
+| TST-05 | Teste | Testes de tolerância do framing |
+| DOC-02 | Documentação | Ajuste textual no exemplo composto |
+| INF-01 | Infraestrutura | Arquivo `LICENSE` |
+| INF-02 | Infraestrutura | `.gitignore` |
+| INF-03 | Infraestrutura | CI roda o gate dos lotes seguintes |
+
+**Gate:** o gate completo (é rápido) + commit por item.
+**Pronto quando:** todos os 12 itens estiverem na `main` com testes verdes.
+
+### Lote 1 — Robustez da conexão e das ações da GUI
+
+**Branch:** `fix/robustez-gui`
+**Dependências:** Lote 0
+**Arquivos principais:** `src/bin/gui.rs`, `src/bin/gui/ble_task.rs`,
+`src/ble.rs`
+**Objetivo:** impedir que a GUI mostre estado incorreto ou permita ações
+inválidas.
+
+| Item | Entrega |
+| --- | --- |
+| COR-03 | Ações BLE bloqueadas (ou simuladas) no modo offline |
+| COR-04 | Link morto detectado; GUI volta para "Desconectado" |
+| COR-05 | Toggles não revertem após comando bem-sucedido sem eco |
+| COR-06 | ANC desconhecido não é exibido nem reenviado como "Desligado" |
+| COR-07 | Função de toque desconhecida visível no seletor |
+| COR-10 | `clap` na GUI (`--help`, `--version`, `--offline`) |
+| IMP-02 | Flag `--config PATH` na GUI |
+| TST-03 | Testes das transições de estado da GUI |
+| TST-06 | Regressões de COR-03..07 e COR-10 |
+
+**Gate extra:** teste manual no fone desligando-o durante o uso (COR-04) e
+abrindo a GUI com `--offline` (COR-03).
+**Pronto quando:** nenhuma ação da GUI produzir erro por estado local
+inconsistente.
+
+### Lote 2 — Fundação compartilhada e testável
+
+**Branch:** `refactor/controlador-transporte`
+**Dependências:** Lote 1
+**Arquivos principais:** `src/lib.rs`, novo `src/actions.rs` (ou equivalente),
+`src/main.rs`, `src/bin/gui/ble_task.rs`, `src/ble.rs`
+**Objetivo:** eliminar a duplicação CLI/GUI e permitir testes sem hardware.
+
+| Item | Entrega |
+| --- | --- |
+| REF-01 | Camada de ações compartilhada (`sync → enviar → aplicar → reconectar`) |
+| REF-03 | Trait de transporte implementado por `BleSession` |
+| TST-01 | Helpers puros do CLI movidos/testados (`build_anc_mode`, `wait_duration`, `mapping_from_bindings`) |
+| TST-02 | Testes de sessão com dublê de transporte |
+
+**Gate extra:** revisão de que CLI e GUI mantêm o mesmo comportamento
+observável (mesmos comandos e mensagens).
+**Pronto quando:** existir um único fluxo de orquestração e ele estiver coberto
+por testes com dublê.
+
+### Lote 3 — Sincronização e desempenho
+
+**Branch:** `perf/sincronizacao-notificacoes`
+**Dependências:** Lote 2
+**Arquivos principais:** `src/ble.rs`, `src/main.rs`, controlador do Lote 2
+**Objetivo:** reduzir latência e evitar re-subscrições desnecessárias.
+
+| Item | Entrega |
+| --- | --- |
+| REF-04 | Stream de notificações persistente por sessão |
+| REF-05 | `sync` encerra quando todas as respostas chegarem |
+| MEL-01 | CLI sem sync obrigatório antes de cada comando (`--no-sync` ou equivalente) |
+| MEL-02 | `ensure_powered` tolera `Unknown` transitório |
+
+**Gate extra:** medir o tempo típico de `device info` e de uma ação antes/depois.
+**Pronto quando:** não houver perda de respostas e a latência cair de forma
+mensurável.
+
+### Lote 4 — Manutenibilidade da GUI e do build
+
+**Branch:** `refactor/gui-modulos`
+**Dependências:** Lote 1
+**Arquivos principais:** `src/bin/gui.rs`, novos módulos em `src/bin/gui/`,
+`Cargo.toml`
+**Objetivo:** reduzir o arquivo monolítico e o custo de build.
+
+| Item | Entrega |
+| --- | --- |
+| REF-02 | `gui.rs` dividido em `app`, `theme`, `widgets` e `tabs` |
+| INF-04 | Feature `gui` com dependência opcional do `iced` |
+| MEL-03 | Feedback de progresso/configuração na reconexão LDAC |
+
+**Gate extra:** GUI aberta em modo offline para conferir o layout após a
+divisão dos módulos.
+**Pronto quando:** nenhum arquivo da GUI passar de ~600 linhas e
+`cargo build --no-default-features` gerar apenas o CLI.
+
+### Lote 5 — Estado em tempo real na GUI
+
+**Branch:** `feat/gui-tempo-real`
+**Dependências:** Lotes 2, 3 e 4
+**Arquivos principais:** `src/bin/gui/ble_task.rs`, módulos da GUI
+**Objetivo:** refletir mudanças feitas no fone sem ação do usuário.
+
+| Item | Entrega |
+| --- | --- |
+| IMP-01 | Subscrição persistente em background atualizando a UI |
+| DOC-05 | README atualizado (limitações e comportamento ao vivo) |
+
+**Gate extra:** alterar ANC/toque pelo fone e conferir a atualização na GUI sem
+clicar em **Atualizar**.
+**Pronto quando:** mudanças externas aparecerem na GUI em poucos segundos.
+
+### Lote 6 — Protocolo e validação com hardware
+
+**Branch:** `feat/protocolo-hardware`
+**Dependências:** Lotes 0 e 2 (controlador) + acesso ao fone
+**Arquivos principais:** `src/protocol/*`, `src/state.rs`,
+`PROTOCOLO_MelobudsNext.md`
+**Objetivo:** fechar as lacunas que dependem de captura real.
+
+| Item | Entrega |
+| --- | --- |
+| PRO-01 | Decodificação de `0x28` (ANC Wear) com testes |
+| PRO-02 | Auto-desligar e opcodes desconhecidos documentados |
+| PRO-03 | Validação em Linux registrada |
+| PRO-04 | Matriz de compatibilidade por firmware |
+| IMP-03 | Notificações `0x2F`/`0x30` tratadas, se observadas |
+| TST-07 | Roteiro/checklist de validação manual |
+
+**Gate extra:** executar o checklist completo em Linux (e Windows, se
+disponível).
+**Pronto quando:** as capturas estiverem documentadas e os opcodes
+implementados ou explicitamente descartados.
+
+### Lote 7 — Documentação e entrega
+
+**Branch:** `chore/docs-release`
+**Dependências:** todos os lotes anteriores
+**Arquivos principais:** `README.md`, `PROTOCOLO_MelobudsNext.md`,
+`packaging/`
+**Objetivo:** alinhar a documentação ao estado final e preparar distribuição.
+
+| Item | Entrega |
+| --- | --- |
+| DOC-01 | Seção 11 do protocolo reescrita para o estado do Rust |
+| DOC-03 | Pré-requisitos de BLE no Linux |
+| DOC-04 | Flags da GUI documentadas |
+| INF-05 | Empacotamento (AUR/PKGBUILD, `.desktop`, release Windows) |
+
+**Gate extra:** instalação a partir do pacote gerado.
+**Pronto quando:** um novo usuário conseguir compilar/instalar só pela
+documentação.
+
+### Ordem, dependências e status
+
+| Lote | Branch | Depende de | Itens | Status |
+| --- | --- | --- | --- | --- |
+| 0 | `main` | — | 12 | Pendente |
+| 1 | `fix/robustez-gui` | 0 | 9 | Pendente |
+| 2 | `refactor/controlador-transporte` | 1 | 4 | Pendente |
+| 3 | `perf/sincronizacao-notificacoes` | 2 | 4 | Pendente |
+| 4 | `refactor/gui-modulos` | 1 | 3 | Pendente |
+| 5 | `feat/gui-tempo-real` | 2, 3, 4 | 2 | Pendente |
+| 6 | `feat/protocolo-hardware` | 0, 2 | 6 | Pendente |
+| 7 | `chore/docs-release` | todos | 4 | Pendente |
+
+> Total: 44 itens. O lote 4 pode ser executado em paralelo ao 2/3 por não
+> compartilhar arquivos centrais, mas o merge deve seguir a ordem da tabela
+> para manter a `main` sempre estável.
+
+### Regra de promoção para a `main`
+
+Um item do lote 0 só permanece na `main` se:
+
+1. for resolvido em um único commit (ou dois, no máximo, código + teste);
+2. não alterar API pública usada pela GUI;
+3. não exigir teste manual com o fone;
+4. passar no gate completo.
+
+Caso contrário, o item é movido para o lote temático correspondente e segue o
+fluxo de branch.
