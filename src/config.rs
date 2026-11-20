@@ -124,6 +124,11 @@ impl Config {
         self.save_to(Self::default_path())
     }
 
+    /// Writes the configuration atomically.
+    ///
+    /// The JSON is written to a temporary file in the same directory and then
+    /// renamed over the destination, so an interrupted write cannot leave a
+    /// truncated configuration behind.
     pub fn save_to(&self, path: impl AsRef<Path>) -> io::Result<()> {
         let path = path.as_ref();
 
@@ -133,7 +138,15 @@ impl Config {
 
         let contents = serde_json::to_string_pretty(self)
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
-        fs::write(path, contents)
+        let temporary = temporary_path(path);
+        fs::write(&temporary, contents)?;
+
+        if let Err(error) = fs::rename(&temporary, path) {
+            let _ = fs::remove_file(&temporary);
+            return Err(error);
+        }
+
+        Ok(())
     }
 
     pub fn with_mac(mut self, mac: impl Into<String>) -> Self {
@@ -146,6 +159,13 @@ fn home_directory() -> Option<PathBuf> {
     std::env::var_os("HOME")
         .or_else(|| std::env::var_os("USERPROFILE"))
         .map(PathBuf::from)
+}
+
+/// Returns the sibling path used to stage an atomic write.
+fn temporary_path(path: &Path) -> PathBuf {
+    let mut name = path.file_name().unwrap_or_default().to_os_string();
+    name.push(".tmp");
+    path.with_file_name(name)
 }
 
 #[cfg(test)]
@@ -179,6 +199,38 @@ mod tests {
         let loaded = Config::load_from(&path).unwrap();
 
         assert_eq!(loaded, config);
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn saves_atomically_without_leaving_a_temporary_file() {
+        let directory = temporary_directory();
+        let path = directory.join("config.json");
+        let config = Config::default().with_mac("AA:BB:CC:DD:EE:FF");
+
+        config.save_to(&path).unwrap();
+
+        assert!(path.exists());
+        assert!(!temporary_path(&path).exists());
+        assert_eq!(Config::load_from(&path).unwrap(), config);
+
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn failed_save_preserves_the_previous_file() {
+        let directory = temporary_directory();
+        let path = directory.join("config.json");
+        let original = Config::default().with_mac("AA:BB:CC:DD:EE:FF");
+        original.save_to(&path).unwrap();
+
+        // Occupy the staging path so the write fails before the rename.
+        fs::create_dir_all(temporary_path(&path)).unwrap();
+
+        let replacement = Config::default().with_mac("11:22:33:44:55:66");
+        assert!(replacement.save_to(&path).is_err());
+        assert_eq!(Config::load_from(&path).unwrap(), original);
+
         fs::remove_dir_all(directory).unwrap();
     }
 
