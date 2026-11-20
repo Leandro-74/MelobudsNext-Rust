@@ -159,7 +159,9 @@ cargo run -- touch decode "01 01 02 03 03 00 04 00 05 00 06 00 07 00 08 00 00 00
 ## Configuração
 
 O caminho padrão é `~/.melobudsnext/config.json` (ou `%USERPROFILE%\.melobudsnext\config.json`).
-Use `--config PATH` para apontar para outro arquivo.
+Use `--config PATH` para apontar para outro arquivo. Se `HOME`/`USERPROFILE`
+não estiver definido, o CLI retorna um erro em vez de gravar no diretório
+atual; nesse caso informe `--config PATH`.
 
 ```json
 {

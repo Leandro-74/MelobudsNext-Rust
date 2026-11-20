@@ -458,7 +458,10 @@ impl Cli {
             command,
         } = self;
 
-        let config_path = config.unwrap_or_else(Config::default_path);
+        let config_path = match config {
+            Some(path) => path,
+            None => Config::default_path()?,
+        };
 
         match command {
             Command::Build { command } => print_packet(build_packet(command)?),

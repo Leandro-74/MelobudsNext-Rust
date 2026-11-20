@@ -98,17 +98,18 @@ impl From<RawConfig> for Config {
 
 impl Config {
     /// Returns the default configuration path for the current user.
-    pub fn default_path() -> PathBuf {
-        home_directory()
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join(".melobudsnext")
-            .join("config.json")
+    ///
+    /// Resolving the path fails when neither `HOME` nor `USERPROFILE` is set,
+    /// instead of silently falling back to the current directory. Callers can
+    /// still pass an explicit path with `--config`.
+    pub fn default_path() -> io::Result<PathBuf> {
+        default_path_from(home_directory())
     }
 
     /// Loads the default configuration, returning defaults when the file does
     /// not exist.
     pub fn load() -> io::Result<Self> {
-        Self::load_from(Self::default_path())
+        Self::load_from(Self::default_path()?)
     }
 
     pub fn load_from(path: impl AsRef<Path>) -> io::Result<Self> {
@@ -121,7 +122,7 @@ impl Config {
     }
 
     pub fn save(&self) -> io::Result<()> {
-        self.save_to(Self::default_path())
+        self.save_to(Self::default_path()?)
     }
 
     /// Writes the configuration atomically.
@@ -159,6 +160,18 @@ fn home_directory() -> Option<PathBuf> {
     std::env::var_os("HOME")
         .or_else(|| std::env::var_os("USERPROFILE"))
         .map(PathBuf::from)
+        .filter(|path| !path.as_os_str().is_empty())
+}
+
+fn default_path_from(home: Option<PathBuf>) -> io::Result<PathBuf> {
+    let home = home.ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::NotFound,
+            "cannot determine the home directory; set HOME or USERPROFILE, or pass --config PATH",
+        )
+    })?;
+
+    Ok(home.join(".melobudsnext").join("config.json"))
 }
 
 /// Returns the sibling path used to stage an atomic write.
@@ -179,6 +192,26 @@ mod tests {
             .unwrap()
             .as_nanos();
         std::env::temp_dir().join(format!("melobudsnext-test-{}-{unique}", std::process::id()))
+    }
+
+    #[test]
+    fn default_path_uses_the_home_directory() {
+        let path = default_path_from(Some(PathBuf::from("/tmp/home"))).unwrap();
+
+        assert_eq!(
+            path,
+            PathBuf::from("/tmp/home")
+                .join(".melobudsnext")
+                .join("config.json")
+        );
+    }
+
+    #[test]
+    fn default_path_fails_without_a_home_directory() {
+        let error = default_path_from(None).unwrap_err();
+
+        assert_eq!(error.kind(), io::ErrorKind::NotFound);
+        assert!(error.to_string().contains("--config"));
     }
 
     #[test]
