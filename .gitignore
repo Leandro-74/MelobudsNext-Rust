@@ -1,1 +1,14 @@
 /target
+
+# Local secrets (never commit real values; see AGENTS.md)
+.env
+.env.*
+!.env.example
+
+# Editors and IDEs
+.idea/
+.vscode/
+
+# Local logs and temporary files
+*.log
+*.tmp
