@@ -9,6 +9,7 @@
 mod ble_task;
 
 use std::fmt;
+use std::path::PathBuf;
 
 use ble_task::{Action, ActionResult, Session};
 use clap::Parser;
@@ -75,6 +76,10 @@ fn medium() -> Font {
     about = "Painel gráfico para o QCY Melobuds Pro"
 )]
 struct Cli {
+    /// Caminho do arquivo de configuração (padrão: ~/.melobudsnext/config.json).
+    #[arg(long, value_name = "PATH")]
+    config: Option<PathBuf>,
+
     /// Abre a interface sem acessar o Bluetooth (demonstração e capturas).
     #[arg(long)]
     offline: bool,
@@ -259,13 +264,7 @@ struct App {
 
 impl App {
     fn new(cli: Cli) -> (Self, Task<Message>) {
-        let (config, config_error) = match Config::load() {
-            Ok(config) => (config, None),
-            Err(error) => (
-                Config::default(),
-                Some(format!("não foi possível ler a configuração: {error}")),
-            ),
-        };
+        let (config, config_error) = load_configuration(&cli);
 
         let offline =
             cli.offline || offline_flag(std::env::var("MELOBUDNEXT_GUI_OFFLINE").ok().as_deref());
@@ -2169,6 +2168,24 @@ fn scrollable_style(_theme: &Theme, _status: scrollable::Status) -> scrollable::
 // Entry point
 // ---------------------------------------------------------------------------
 
+/// Loads the configuration from `--config PATH`, or from the default path when
+/// the flag is absent. Errors are reported in the UI and fall back to defaults,
+/// matching the behavior of the previous `Config::load` call.
+fn load_configuration(cli: &Cli) -> (Config, Option<String>) {
+    let result = match &cli.config {
+        Some(path) => Config::load_from(path),
+        None => Config::load(),
+    };
+
+    match result {
+        Ok(config) => (config, None),
+        Err(error) => (
+            Config::default(),
+            Some(format!("não foi possível ler a configuração: {error}")),
+        ),
+    }
+}
+
 /// Interprets `MELOBUDNEXT_GUI_OFFLINE` as a boolean instead of a presence
 /// flag, so `0`, `false`, `no`, `off` and an empty value keep the GUI online.
 /// Unrecognized non-empty values are treated as enabled for backwards
@@ -2198,8 +2215,70 @@ fn main() -> iced::Result {
 
 #[cfg(test)]
 mod tests {
-    use super::{offline_flag, Cli};
+    use super::{load_configuration, offline_flag, Cli};
     use clap::Parser;
+    use melobudsnext::config::Config;
+    use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn temporary_directory() -> PathBuf {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!(
+            "melobudsnext-gui-test-{}-{unique}",
+            std::process::id()
+        ))
+    }
+
+    #[test]
+    fn parses_the_config_flag() {
+        let cli =
+            Cli::try_parse_from(["melobudsnext-gui", "--config", "/tmp/perfil.json"]).unwrap();
+
+        assert_eq!(
+            cli.config.as_deref(),
+            Some(std::path::Path::new("/tmp/perfil.json"))
+        );
+        assert!(!cli.offline);
+    }
+
+    #[test]
+    fn loads_the_configuration_from_the_requested_path() {
+        let directory = temporary_directory();
+        let path = directory.join("config.json");
+        Config::default()
+            .with_mac("AA:BB:CC:DD:EE:FF")
+            .save_to(&path)
+            .unwrap();
+
+        let cli =
+            Cli::try_parse_from(["melobudsnext-gui", "--config", path.to_str().unwrap()]).unwrap();
+        let (config, error) = load_configuration(&cli);
+
+        assert!(error.is_none());
+        assert_eq!(config.mac_address.as_deref(), Some("AA:BB:CC:DD:EE:FF"));
+
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn reports_configuration_errors_when_using_the_flag() {
+        let directory = temporary_directory();
+        std::fs::create_dir_all(&directory).unwrap();
+
+        // A directory cannot be read as a file, so loading must report an error.
+        let cli =
+            Cli::try_parse_from(["melobudsnext-gui", "--config", directory.to_str().unwrap()])
+                .unwrap();
+        let (config, error) = load_configuration(&cli);
+
+        assert_eq!(config, Config::default());
+        assert!(error.unwrap().contains("configuração"));
+
+        std::fs::remove_dir_all(directory).unwrap();
+    }
 
     #[test]
     fn parses_the_offline_flag_with_clap() {

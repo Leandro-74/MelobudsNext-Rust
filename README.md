@@ -125,10 +125,10 @@ gravar capturas), use:
 cargo run --bin melobudsnext-gui -- --offline
 ```
 
-`melobudsnext-gui --help` lista as flags disponíveis (`--offline`) e
-`--version` imprime a versão do pacote. O mesmo modo offline pode ser ativado
-com `MELOBUDNEXT_GUI_OFFLINE=1` (valores como `true`, `yes` e `on` também
-ligam; `0`, `false`, `no`, `off` e vazio desligam).
+`melobudsnext-gui --help` lista as flags disponíveis (`--offline` e
+`--config PATH`) e `--version` imprime a versão do pacote. O mesmo modo offline
+pode ser ativado com `MELOBUDNEXT_GUI_OFFLINE=1` (valores como `true`, `yes` e
+`on` também ligam; `0`, `false`, `no`, `off` e vazio desligam).
 Nele o botão de conexão fica desabilitado e o rodapé mostra um aviso.
 
 A janela tem tamanho fixo de 1200x800 (layout de dashboard) e usa o renderer
@@ -161,9 +161,11 @@ cargo run -- touch decode "01 01 02 03 03 00 04 00 05 00 06 00 07 00 08 00 00 00
 ## Configuração
 
 O caminho padrão é `~/.melobudsnext/config.json` (ou `%USERPROFILE%\.melobudsnext\config.json`).
-Use `--config PATH` para apontar para outro arquivo. Se `HOME`/`USERPROFILE`
-não estiver definido, o CLI retorna um erro em vez de gravar no diretório
-atual; nesse caso informe `--config PATH`.
+Use `--config PATH` no CLI ou na GUI para apontar para outro arquivo. Se
+`HOME`/`USERPROFILE` não estiver definido, o CLI retorna um erro em vez de gravar
+no diretório atual; nesse caso informe `--config PATH`. A GUI também aceita
+`--config PATH` e avisa no rodapé quando o arquivo pedido não pode ser lido,
+seguindo com os valores padrão.
 
 ```json
 {
