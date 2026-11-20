@@ -12,6 +12,9 @@ pub enum ProtocolError {
     #[error("invalid packet header 0x{0:02X}; expected 0xFF")]
     InvalidHeader(u8),
 
+    #[error("packet parameters exceed the 253-byte protocol limit: {0} bytes")]
+    ParamsTooLong(usize),
+
     #[error("name is too long: {0} bytes (maximum is 32)")]
     NameTooLong(usize),
 

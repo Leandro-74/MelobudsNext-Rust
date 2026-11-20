@@ -327,7 +327,7 @@ impl BleSession {
 
     /// Writes an encoded protocol packet.
     pub async fn write_command(&self, packet: &Packet) -> Result<()> {
-        self.write_raw(&packet.encode()).await
+        self.write_raw(&packet.try_encode()?).await
     }
 
     /// Writes a complete 20-byte touch mapping.

@@ -21,13 +21,12 @@ impl Packet {
     /// Encodes the packet as `FF body_len opcode param_len params...`.
     ///
     /// `body_len` includes the opcode and the parameter length, so the
-    /// protocol allows at most 253 parameter bytes. The invariant is asserted
-    /// instead of silently truncating the length byte.
-    pub fn encode(&self) -> Vec<u8> {
-        assert!(
-            self.params.len() <= 253,
-            "packet parameters exceed the 253-byte protocol limit"
-        );
+    /// protocol allows at most 253 parameter bytes. This variant reports the
+    /// overflow instead of truncating the length byte.
+    pub fn try_encode(&self) -> Result<Vec<u8>, ProtocolError> {
+        if self.params.len() > 253 {
+            return Err(ProtocolError::ParamsTooLong(self.params.len()));
+        }
 
         let param_len = self.params.len() as u8;
         let body_len = param_len + 2;
@@ -38,7 +37,19 @@ impl Packet {
         bytes.push(self.opcode);
         bytes.push(param_len);
         bytes.extend_from_slice(&self.params);
-        bytes
+        Ok(bytes)
+    }
+
+    /// Convenience wrapper around [`Packet::try_encode`] for packets whose
+    /// parameters are already validated.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the parameters exceed the 253-byte protocol limit. Prefer
+    /// [`Packet::try_encode`] for values that come from outside the crate.
+    pub fn encode(&self) -> Vec<u8> {
+        self.try_encode()
+            .expect("packet parameters exceed the 253-byte protocol limit")
     }
 }
 
@@ -126,5 +137,23 @@ mod tests {
     #[should_panic(expected = "253-byte protocol limit")]
     fn rejects_oversized_parameters_instead_of_truncating() {
         Packet::new(0x42, vec![0u8; 254]).encode();
+    }
+
+    #[test]
+    fn try_encode_reports_oversized_parameters() {
+        let packet = Packet::new(0x42, vec![0u8; 254]);
+        assert_eq!(packet.try_encode(), Err(ProtocolError::ParamsTooLong(254)));
+    }
+
+    #[test]
+    fn try_encode_accepts_the_maximum_payload() {
+        let packet = Packet::new(0x42, vec![0u8; 253]);
+        let bytes = packet.try_encode().unwrap();
+
+        assert_eq!(bytes[0], PACKET_HEADER);
+        assert_eq!(bytes[1], 0xFF);
+        assert_eq!(bytes[2], 0x42);
+        assert_eq!(bytes[3], 253);
+        assert_eq!(bytes.len(), 257);
     }
 }
