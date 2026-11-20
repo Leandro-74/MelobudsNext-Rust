@@ -202,8 +202,11 @@ Python, faça uma cópia antes, porque ele espera a chave `address`.
 
 ## Comportamento e diferenças em relação ao Python
 
-- Decodificação tolerante: ANC desconhecido é preservado como `unknown(...)`,
-  bateria de 2 bytes é aceita e o touch aceita qualquer quantidade par de bytes.
+- Decodificação tolerante: ANC desconhecido é preservado como `unknown(...)`; na
+  GUI ele aparece como "Desconhecido" e o botão **Aplicar ANC** fica
+  desabilitado até que um modo conhecido seja escolhido, em vez de reenviar
+  "desligado". Bateria de 2 bytes é aceita e o touch aceita qualquer quantidade
+  par de bytes.
 - `rename` vazio não apaga o nome atual.
 - O `sync` não aborta por causa de uma leitura opcional; falhas viram avisos.
 - As consultas `0xFE` são enviadas a cada 50 ms enquanto as notificações são

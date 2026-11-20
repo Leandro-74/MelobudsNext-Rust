@@ -135,6 +135,9 @@ enum AncChoice {
     Off,
     Scene(AncScene),
     Transparency,
+    /// Triple reported by the firmware that the interface cannot represent.
+    /// Kept as its own choice so it is never silently converted into "off".
+    Unknown([u8; 3]),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -387,9 +390,10 @@ impl App {
 
     fn load_drafts(&mut self) {
         self.anc_choice = match self.state.anc {
-            AncMode::Off | AncMode::Unknown(_) => AncChoice::Off,
+            AncMode::Off => AncChoice::Off,
             AncMode::Anc { scene, .. } => AncChoice::Scene(scene),
             AncMode::Transparency { .. } => AncChoice::Transparency,
+            AncMode::Unknown(payload) => AncChoice::Unknown(payload),
         };
 
         if let AncMode::Anc {
@@ -446,6 +450,10 @@ impl App {
                 };
                 AncMode::transparency(mode).map_err(|error| error.to_string())
             }
+            AncChoice::Unknown(payload) => Err(format!(
+                "O ANC reportado pelo fone é desconhecido ({}); escolha um modo antes de aplicar.",
+                unknown_anc_label(payload)
+            )),
         }
     }
 
@@ -1189,6 +1197,18 @@ fn anc_tab(app: &App) -> Element<'_, Message> {
 
             column
         }
+        AncChoice::Unknown(payload) => column![
+            text("O fone reporta um modo de cancelamento que esta interface não conhece; nada será reenviado como desligado.")
+                .size(11)
+                .color(DANGER),
+            text(format!("Valor reportado: {}", unknown_anc_label(payload)))
+                .size(11)
+                .color(MUTED),
+            text("Escolha um modo acima para enviar uma configuração.")
+                .size(10)
+                .color(MUTED),
+        ]
+        .spacing(6),
     };
 
     modes = modes.push(details);
@@ -1212,7 +1232,11 @@ fn anc_tab(app: &App) -> Element<'_, Message> {
             .align_y(Alignment::Center),
         ),
         row![
-            primary_button("Aplicar ANC", Message::ApplyAnc, app.controls_enabled()),
+            primary_button(
+                "Aplicar ANC",
+                Message::ApplyAnc,
+                app.controls_enabled() && !matches!(app.anc_choice, AncChoice::Unknown(_)),
+            ),
             text("A alteração é imediata e pode ser sentida nos fones.")
                 .size(10)
                 .color(MUTED),
@@ -1806,6 +1830,11 @@ fn anc_label(mode: AncMode) -> String {
     }
 }
 
+/// Formats the raw ANC triple reported by the firmware, e.g. `01 09 00`.
+fn unknown_anc_label(payload: [u8; 3]) -> String {
+    format!("{:02X} {:02X} {:02X}", payload[0], payload[1], payload[2])
+}
+
 fn anc_badge_label(mode: AncMode) -> String {
     match mode {
         AncMode::Off => "Desligado".to_string(),
@@ -2381,6 +2410,28 @@ mod tests {
     fn offline_app() -> super::App {
         let (app, _) = super::App::build(Config::default(), None, true);
         app
+    }
+
+    fn online_app() -> super::App {
+        let (app, _) = super::App::build(Config::default(), None, false);
+        app
+    }
+
+    #[test]
+    fn unknown_anc_is_preserved_and_never_applied_as_off() {
+        use melobudsnext::protocol::anc::AncMode;
+
+        let mut app = online_app();
+        app.state.anc = AncMode::Unknown([0x01, 0x09, 0x00]);
+
+        app.load_drafts();
+
+        assert_eq!(
+            app.anc_choice,
+            super::AncChoice::Unknown([0x01, 0x09, 0x00])
+        );
+        let error = app.active_anc_mode().unwrap_err();
+        assert!(error.contains("01 09 00"), "error was: {error}");
     }
 
     #[test]
