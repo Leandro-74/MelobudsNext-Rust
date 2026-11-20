@@ -56,8 +56,11 @@ impl Packet {
 /// Parses one or more blocks from a command-channel notification.
 ///
 /// The first two bytes are the `0xFF` header and `body_len`. Blocks are then
-/// read sequentially from offset 2. A truncated trailing block is discarded,
-/// which matches the behavior of the reference implementation.
+/// read sequentially from offset 2. `body_len` is intentionally ignored because
+/// composite packets do not always report the total body length. A truncated
+/// trailing block is discarded, and extra bytes that do not form a complete
+/// block are ignored, which matches the behavior of the reference
+/// implementation.
 pub fn parse(bytes: &[u8]) -> Result<Vec<Packet>, ProtocolError> {
     if bytes.is_empty() {
         return Err(ProtocolError::EmptyPacket);
@@ -113,6 +116,60 @@ mod tests {
     #[test]
     fn discards_a_truncated_block() {
         assert!(parse(&[0xFF, 0x05, 0x17, 0x03, 0x00]).unwrap().is_empty());
+    }
+
+    #[test]
+    fn keeps_complete_blocks_before_a_truncated_one() {
+        let bytes = [0xFF, 0x06, 0x09, 0x01, 0x01, 0x17, 0x03, 0x00];
+
+        assert_eq!(parse(&bytes).unwrap(), vec![Packet::new(0x09, [0x01])]);
+    }
+
+    #[test]
+    fn ignores_extra_bytes_after_the_last_complete_block() {
+        let bytes = [0xFF, 0x03, 0x09, 0x01, 0x01, 0xAA, 0xBB];
+
+        assert_eq!(parse(&bytes).unwrap(), vec![Packet::new(0x09, [0x01])]);
+    }
+
+    #[test]
+    fn discards_a_trailing_single_byte() {
+        let bytes = [0xFF, 0x03, 0x09, 0x01, 0x01, 0xAA];
+
+        assert_eq!(parse(&bytes).unwrap(), vec![Packet::new(0x09, [0x01])]);
+    }
+
+    #[test]
+    fn ignores_body_len_when_parsing_blocks() {
+        // body_len is 0x00, but the two blocks after it are complete.
+        let bytes = [0xFF, 0x00, 0x09, 0x01, 0x01, 0x17, 0x03, 0x00, 0x00, 0x00];
+        let packets = parse(&bytes).unwrap();
+
+        assert_eq!(packets.len(), 2);
+        assert_eq!(packets[0], Packet::new(0x09, [0x01]));
+        assert_eq!(packets[1], Packet::new(0x17, [0x00, 0x00, 0x00]));
+    }
+
+    #[test]
+    fn parses_three_complete_blocks() {
+        let bytes = [
+            0xFF, 0x09, 0x09, 0x01, 0x01, 0x16, 0x01, 0x3C, 0x23, 0x01, 0x01,
+        ];
+        let packets = parse(&bytes).unwrap();
+
+        assert_eq!(
+            packets,
+            vec![
+                Packet::new(0x09, [0x01]),
+                Packet::new(0x16, [0x3C]),
+                Packet::new(0x23, [0x01]),
+            ]
+        );
+    }
+
+    #[test]
+    fn accepts_a_header_without_blocks() {
+        assert!(parse(&[0xFF, 0x00]).unwrap().is_empty());
     }
 
     #[test]
