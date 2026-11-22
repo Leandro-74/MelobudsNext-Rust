@@ -1029,7 +1029,7 @@ Cada sessão adiciona aqui a subseção do lote concluído, antes do merge.
   - REF-02 deixou `src/bin/gui.rs` com 48 linhas (só a entrada e os módulos) e
     distribuiu o restante em `gui/app.rs` (estado e mensagens), `cli.rs`,
     `options.rs`, `theme.rs`, `widgets.rs`, `view.rs`, `device_panel.rs` e
-    `tabs/{status,anc,audio,touch,wear}.rs`. O maior arquivo é `app.rs`, com 557
+    `tabs/{status,anc,audio,touch,wear}.rs`. O maior arquivo é `app.rs`, com 548
     linhas. Os testes da GUI foram separados em `gui/tests/cli.rs` (flags e
     configuração) e `gui/tests/app.rs` (estado e regressões), ambos abaixo de
     600 linhas.
