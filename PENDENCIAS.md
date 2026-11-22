@@ -795,7 +795,7 @@ documentação.
 | --- | --- | --- | --- | --- |
 | 0 | `main` | — | 12 | Implementado (e5c4d0e, 2026-11-19) |
 | 1 | `fix/robustez-gui` | 0 | 9 | Implementado (357c1f4, 2026-11-22) |
-| 2 | `refactor/controlador-transporte` | 1 | 4 | Pendente |
+| 2 | `refactor/controlador-transporte` | 1 | 4 | Implementado (0764928, 2026-11-22) |
 | 3 | `perf/sincronizacao-notificacoes` | 2 | 4 | Pendente |
 | 4 | `refactor/gui-modulos` | 1 | 3 | Pendente |
 | 5 | `feat/gui-tempo-real` | 2, 3, 4 | 2 | Pendente |
@@ -916,6 +916,48 @@ Cada sessão adiciona aqui a subseção do lote concluído, antes do merge.
   - Recomendação para o Lote 2: mover `apply_command_result` e a política de
     link para o controlador compartilhado e cobrir queda de link com o dublê;
     no Lote 4, manter o bloqueio offline concentrado em um único ponto.
+
+#### Lote 2 — Fundação compartilhada e testável
+
+- **Status:** Implementado
+- **Branch:** `refactor/controlador-transporte`
+- **Commits:** `6505fc0` (REF-03), `0b06518` (REF-01), `8f8d168` (TST-01),
+  `0764928` (TST-02)
+- **Validação:** gate completo na branch e na `main` (`cargo fmt --check`,
+  `cargo clippy --all-targets -- -D warnings`, `cargo test --all-targets` com
+  105 testes da lib + 26 da GUI + 6 de integração, `cargo build --release`).
+  CLI conferido com `build`, `decode`, `touch encode`, `battery` e `firmware`;
+  entradas inválidas de ANC continuam falhando com as mesmas mensagens. GUI:
+  `--help`/`--version` e testes de estado offline. Hardware: **não executado**
+  — não havia fone disponível na sessão, então nenhuma ação BLE real foi
+  validada.
+- **Notas:**
+  - REF-03 introduziu `actions::Transport`, um trait object-safe com futuros
+    encaixotados (`BoxFuture`) implementado por `BleSession`, e
+    `actions::Connector` para injetar o transporte nos testes.
+  - REF-01 moveu a orquestração para `actions::Controller`: conexão + sync,
+    refresh, comando com reconexão e escrita de toque/renomeação. CLI e GUI
+    ficaram com apenas entrada/saída; o CLI usa um `CommandObserver` para
+    imprimir os ecos e a mensagem de reconexão na ordem antiga.
+  - As diferenças observáveis entre CLI e GUI foram preservadas de propósito:
+    a GUI usa `EchoPolicy::ApplyRequestedWhenSilent` (mantém o valor escolhido
+    sem eco) e o CLI usa `EchoPolicy::EchoesOnly`. Na reconexão do CLI, os
+    avisos anteriores continuam sendo descartados em favor do sync novo, como
+    antes. A janela de scan do CLI continua vindo de `--scan-timeout` via
+    `Controller::set_scan_timeout`.
+  - TST-01 moveu `build_anc_mode`, `wait_duration` e `mapping_from_bindings`
+    para `src/cli.rs`, com testes de combinações inválidas e limites.
+  - TST-02 adicionou um dublê de `Transport`/`Connector` scriptável e cobre
+    conectar, sincronizar, refresh, reconectar, queda de link (inclusive sonda
+    inconclusiva), comandos nos dois modos de eco, rename e toque.
+  - Armadilha: `CommandObserver` precisou de `Send` para o futuro do
+    `Task::perform` da GUI continuar `Send`; o controlador guarda o observer
+    como `&mut dyn CommandObserver` apenas durante a chamada.
+  - Dívidas: `send`, `monitor`, `inspect`, `read` e `write-touch` do CLI ainda
+    falam direto com `BleSession` (não são o fluxo `sync → comando`); a
+    validação com hardware segue pendente. O Lote 3 pode reutilizar
+    `Transport`/`Controller` para a stream persistente e o encerramento
+    antecipado do sync.
 
 ## Checklist de release (após o Lote 7)
 

@@ -228,5 +228,6 @@ Python, faça uma cópia antes, porque ele espera a chave `address`.
 cargo test
 ```
 
-Os testes cobrem framing, opcodes, ANC, touch, bateria, firmware, estado e
-compatibilidade do arquivo de configuração com o formato Python.
+Os testes cobrem framing, opcodes, ANC, touch, bateria, firmware, estado,
+compatibilidade do arquivo de configuração com o formato Python e o controlador
+de ações com um dublê de transporte.
