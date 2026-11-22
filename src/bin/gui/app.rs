@@ -11,12 +11,21 @@ use melobudsnext::protocol::commands::{self, NotificationVolume, WearDetection};
 use melobudsnext::protocol::touch::{TouchKey, TouchMapping};
 use melobudsnext::DeviceState;
 
-use crate::ble_task::{Action, ActionResult, Session};
+use crate::ble_task::{Action, ActionResult, LiveUpdate, Session};
 use crate::cli::{load_configuration, offline_flag, Cli};
 use crate::options::{AncChoice, Tab, TouchOption, VolumeOption};
 
 pub(crate) const OFFLINE_NOTICE: &str =
     "Modo offline: as ações do fone estão desativadas para demonstração.";
+
+/// How long the background listener waits for one notification before looping.
+const LIVE_WAIT: Duration = Duration::from_millis(250);
+/// Pause before retrying when there is no link or the live stream failed.
+const LIVE_RETRY: Duration = Duration::from_millis(250);
+/// Idle polls before re-reading the touch characteristic (about 3 seconds).
+/// Notification-based fields change immediately; the touch map has no
+/// notification, so it needs an occasional direct read.
+const LIVE_TOUCH_TICKS: u32 = 12;
 
 #[derive(Debug, Clone)]
 pub(crate) enum Message {
@@ -27,6 +36,8 @@ pub(crate) enum Message {
     Disconnect,
     Progress(String),
     Finished(ActionResult),
+    /// Unsolicited state change received by the background listener.
+    Live(LiveUpdate),
     SelectAnc(AncChoice),
     AncLevelChanged(u8),
     TransparencyIntensityChanged(u8),
@@ -153,14 +164,23 @@ impl App {
             rename_input: String::new(),
         };
 
-        let task = match target {
+        let connect = match target {
             Some(address) if !offline && !address.trim().is_empty() => {
                 app.dispatch("Conectando ao fone…", Action::Connect { address })
             }
             _ => Task::none(),
         };
 
-        (app, task)
+        // The background listener runs for the whole session; it waits on the
+        // persistent notification stream and only wakes the UI when something
+        // changed on the headphones.
+        let live = if offline {
+            Task::none()
+        } else {
+            Task::stream(live_updates(app.session.clone()))
+        };
+
+        (app, Task::batch([live, connect]))
     }
 
     pub(crate) fn dispatch(&mut self, label: impl Into<String>, action: Action) -> Task<Message> {
@@ -229,6 +249,15 @@ impl App {
     }
 
     pub(crate) fn load_drafts(&mut self) {
+        self.load_anc_draft();
+        self.balance = self.state.channel_balance;
+        self.load_volume_draft();
+        self.touch_draft = self.state.touch.clone().unwrap_or_default();
+        self.load_wear_draft();
+        self.load_rename_draft();
+    }
+
+    fn load_anc_draft(&mut self) {
         self.anc_choice = match self.state.anc {
             AncMode::Off => AncChoice::Off,
             AncMode::Anc { scene, .. } => AncChoice::Scene(scene),
@@ -254,22 +283,74 @@ impl App {
                 }
             }
         }
+    }
 
-        self.balance = self.state.channel_balance;
+    fn load_volume_draft(&mut self) {
         self.volume = self
             .state
             .notification_volume
             .and_then(NotificationVolume::from_byte)
             .map(VolumeOption);
-        self.touch_draft = self.state.touch.clone().unwrap_or_default();
+    }
 
+    fn load_wear_draft(&mut self) {
         let wear = self.state.wear_detection.unwrap_or_default();
         self.wear_enabled = wear.enabled;
         self.wear_keep_anc = wear.keep_anc;
         self.wear_music = wear.music_index.to_string();
         self.wear_tone = wear.tone.to_string();
+    }
 
+    fn load_rename_draft(&mut self) {
         self.rename_input = self.state.name.clone().unwrap_or_default();
+    }
+
+    /// Applies a state change made on the headphones without an action.
+    ///
+    /// Only the drafts affected by the fields that actually changed are
+    /// reloaded, so an external ANC change does not discard a balance or touch
+    /// edit that is still in progress. Updates are ignored while an action is
+    /// running, because its result is authoritative.
+    pub(crate) fn apply_live(&mut self, update: LiveUpdate) {
+        if self.busy.is_some() {
+            return;
+        }
+
+        self.connected = update.connected;
+
+        if let Some(error) = update.error {
+            self.error = Some(error);
+            self.notice = None;
+            self.warnings.clear();
+            return;
+        }
+
+        if !update.changed {
+            return;
+        }
+
+        let previous = std::mem::replace(&mut self.state, update.state);
+
+        if previous.anc != self.state.anc {
+            self.load_anc_draft();
+        }
+        if previous.channel_balance != self.state.channel_balance {
+            self.balance = self.state.channel_balance;
+        }
+        if previous.notification_volume != self.state.notification_volume {
+            self.load_volume_draft();
+        }
+        if previous.touch != self.state.touch {
+            self.touch_draft = self.state.touch.clone().unwrap_or_default();
+        }
+        if previous.wear_detection != self.state.wear_detection {
+            self.load_wear_draft();
+        }
+        if previous.name != self.state.name {
+            self.load_rename_draft();
+        }
+
+        self.warnings = update.warnings;
     }
 
     pub(crate) fn active_anc_mode(&self) -> Result<AncMode, String> {
@@ -306,6 +387,46 @@ impl App {
     }
 }
 
+/// Long-lived stream that mirrors headphone-initiated changes into the UI.
+///
+/// The stream loops instead of spawning a task: `Session::poll` waits on the
+/// session-wide notification stream with a short timeout, so it keeps working
+/// outside a Tokio runtime (as in the unit tests) and never blocks an action
+/// for longer than [`LIVE_WAIT`].
+pub(crate) fn live_updates(session: Session) -> impl futures::Stream<Item = Message> {
+    futures::stream::unfold(session, |session| async move {
+        let mut idle_ticks: u32 = 0;
+
+        loop {
+            let update = session.poll(LIVE_WAIT).await;
+
+            if update.changed || update.error.is_some() {
+                // Throttle repeated failures so a broken stream does not flood
+                // the message queue.
+                if update.error.is_some() {
+                    tokio::time::sleep(LIVE_RETRY).await;
+                }
+                return Some((Message::Live(update), session));
+            }
+
+            if !update.connected {
+                idle_ticks = 0;
+                tokio::time::sleep(LIVE_RETRY).await;
+                continue;
+            }
+
+            idle_ticks += 1;
+            if idle_ticks >= LIVE_TOUCH_TICKS {
+                idle_ticks = 0;
+                let update = session.refresh_touch().await;
+                if update.changed || update.error.is_some() {
+                    return Some((Message::Live(update), session));
+                }
+            }
+        }
+    })
+}
+
 /// Forwards reconnection attempts from the session to the GUI messages.
 struct ProgressObserver<F> {
     progress: F,
@@ -326,6 +447,10 @@ impl<F: FnMut(u32, u32) + Send> CommandObserver for ProgressObserver<F> {
 pub(crate) fn update(app: &mut App, message: Message) -> Task<Message> {
     let message = match message {
         Message::Finished(result) => return app.finish(result),
+        Message::Live(update) => {
+            app.apply_live(update);
+            return Task::none();
+        }
         Message::Progress(label) => {
             if app.busy.is_some() {
                 app.busy = Some(label);

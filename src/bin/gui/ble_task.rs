@@ -6,6 +6,7 @@
 //! with the CLI; this module only maps GUI messages to controller calls.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::{anyhow, Context, Result};
 use futures::lock::Mutex;
@@ -53,6 +54,17 @@ pub struct ActionResult {
     pub refresh_drafts: bool,
 }
 
+/// State carried by an unsolicited notification received in the background.
+#[derive(Debug, Clone, Default)]
+pub struct LiveUpdate {
+    pub state: DeviceState,
+    pub error: Option<String>,
+    pub warnings: Vec<String>,
+    pub connected: bool,
+    /// Whether the notification actually changed a known state field.
+    pub changed: bool,
+}
+
 /// Cloneable handle to the single BLE session owned by the application.
 #[derive(Clone)]
 pub struct Session {
@@ -96,6 +108,54 @@ impl Session {
         result.address = controller.address();
 
         result
+    }
+
+    /// Waits for one unsolicited notification and reports the resulting state.
+    ///
+    /// The wait is bounded, so the caller can run this in a loop feeding the
+    /// UI without blocking an action forever. A closed stream or a dead link is
+    /// reported as `error` and the client is discarded when the probe confirms
+    /// the loss, mirroring [`Session::run`].
+    pub async fn poll(&self, wait: Duration) -> LiveUpdate {
+        let mut controller = self.inner.lock().await;
+        let mut update = LiveUpdate::default();
+
+        if controller.is_connected() {
+            match controller.poll_notifications(wait).await {
+                Ok(result) => {
+                    update.changed = result.changed;
+                    update.warnings = result.warnings;
+                }
+                Err(error) => {
+                    update.error = Some(format!("{error:#}"));
+                    controller.drop_client_if_link_lost().await;
+                }
+            }
+        }
+
+        update.state = controller.state().clone();
+        update.connected = controller.is_connected();
+        update
+    }
+
+    /// Re-reads the touch mapping so external changes show up without a click.
+    pub async fn refresh_touch(&self) -> LiveUpdate {
+        let mut controller = self.inner.lock().await;
+        let mut update = LiveUpdate::default();
+
+        if controller.is_connected() {
+            match controller.refresh_touch().await {
+                Ok(changed) => update.changed = changed,
+                Err(error) => {
+                    update.error = Some(format!("{error:#}"));
+                    controller.drop_client_if_link_lost().await;
+                }
+            }
+        }
+
+        update.state = controller.state().clone();
+        update.connected = controller.is_connected();
+        update
     }
 }
 

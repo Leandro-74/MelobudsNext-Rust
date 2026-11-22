@@ -450,6 +450,21 @@ impl BleSession {
         Ok(stream.next().await)
     }
 
+    /// Waits up to `wait` for one command notification and returns its value.
+    ///
+    /// Unlike [`BleSession::receive`], this is meant for an idle session: it
+    /// returns as soon as one notification arrives, letting the GUI mirror
+    /// changes made on the headphones without polling the full state. A stream
+    /// closed by the backend is reported as an error so the caller can discard
+    /// the dead link; a timeout returns `Ok(None)`.
+    pub async fn wait_notification(&self, wait: Duration) -> Result<Option<Vec<u8>>> {
+        let mut slot = self.notification_stream().await?;
+        let stream = slot
+            .as_mut()
+            .ok_or_else(|| anyhow!("notification stream is not open"))?;
+        next_value(stream, self.notification.uuid, wait).await
+    }
+
     /// Collects command notifications for `listen` using the session stream.
     pub async fn receive(&self, listen: Duration) -> Result<Vec<Vec<u8>>> {
         let mut slot = self.notification_stream().await?;
@@ -567,6 +582,36 @@ impl BleSession {
             .disconnect()
             .await
             .context("failed to disconnect")
+    }
+}
+
+/// Waits for one notification from `notification_uuid`, up to `wait`.
+///
+/// Notifications from other characteristics are skipped. A closed stream is an
+/// error; reaching the deadline without a matching notification returns
+/// `Ok(None)`.
+async fn next_value(
+    stream: &mut NotificationStream,
+    notification_uuid: Uuid,
+    wait: Duration,
+) -> Result<Option<Vec<u8>>> {
+    let deadline = Instant::now() + wait;
+
+    loop {
+        let now = Instant::now();
+        if now >= deadline {
+            return Ok(None);
+        }
+
+        match tokio::time::timeout(deadline - now, stream.next()).await {
+            Ok(Some(notification)) => {
+                if notification.uuid == notification_uuid {
+                    return Ok(Some(notification.value));
+                }
+            }
+            Ok(None) => return Err(anyhow!("notification stream closed")),
+            Err(_) => return Ok(None),
+        }
     }
 }
 
@@ -876,6 +921,73 @@ mod tests {
 
         assert_eq!(first, vec![vec![0xFF, 0x03, 0x09, 0x01, 0x01]]);
         assert_eq!(second, vec![vec![0xFF, 0x03, 0x10, 0x01, 0x01]]);
+    }
+
+    #[tokio::test]
+    async fn returns_a_live_notification_as_soon_as_it_arrives() {
+        let uuid = Uuid::parse_str(TEST_UUID).unwrap();
+        let (sender, receiver) = mpsc::unbounded();
+        let mut stream: NotificationStream = Box::pin(receiver);
+
+        sender
+            .unbounded_send(notification(
+                uuid,
+                vec![0xFF, 0x05, 0x17, 0x03, 0x01, 0x02, 0x02],
+            ))
+            .unwrap();
+
+        let value = next_value(&mut stream, uuid, Duration::from_secs(1))
+            .await
+            .unwrap();
+
+        assert_eq!(value, Some(vec![0xFF, 0x05, 0x17, 0x03, 0x01, 0x02, 0x02]));
+    }
+
+    #[tokio::test]
+    async fn live_notification_wait_times_out_without_values() {
+        let uuid = Uuid::parse_str(TEST_UUID).unwrap();
+        let (_sender, receiver) = mpsc::unbounded();
+        let mut stream: NotificationStream = Box::pin(receiver);
+
+        let value = next_value(&mut stream, uuid, Duration::from_millis(20))
+            .await
+            .unwrap();
+
+        assert_eq!(value, None);
+    }
+
+    #[tokio::test]
+    async fn live_notification_wait_skips_other_characteristics() {
+        let uuid = Uuid::parse_str(TEST_UUID).unwrap();
+        let (sender, receiver) = mpsc::unbounded();
+        let mut stream: NotificationStream = Box::pin(receiver);
+
+        sender
+            .unbounded_send(notification(Uuid::nil(), vec![0x01]))
+            .unwrap();
+        sender
+            .unbounded_send(notification(uuid, vec![0xFF, 0x03, 0x09, 0x01, 0x01]))
+            .unwrap();
+
+        let value = next_value(&mut stream, uuid, Duration::from_secs(1))
+            .await
+            .unwrap();
+
+        assert_eq!(value, Some(vec![0xFF, 0x03, 0x09, 0x01, 0x01]));
+    }
+
+    #[tokio::test]
+    async fn live_notification_wait_reports_a_closed_stream() {
+        let uuid = Uuid::parse_str(TEST_UUID).unwrap();
+        let (sender, receiver) = mpsc::unbounded::<ValueNotification>();
+        drop(sender);
+        let mut stream: NotificationStream = Box::pin(receiver);
+
+        let error = next_value(&mut stream, uuid, Duration::from_secs(1))
+            .await
+            .unwrap_err();
+
+        assert!(error.to_string().contains("notification stream closed"));
     }
 
     #[tokio::test]
