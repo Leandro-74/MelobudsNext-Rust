@@ -9,7 +9,18 @@ license=('MIT')
 depends=('dbus' 'bluez' 'libxkbcommon' 'wayland')
 makedepends=('cargo' 'rust' 'pkgconf')
 source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
-sha256sums=('SKIP')
+sha256sums=('8b4551a9787282ecb671e39dd2689371f2ffaf5832c3062ac4f498d14e8d0e94')
+
+prepare() {
+  cd "$srcdir"
+
+  # A tag do GitHub extrai como <repositório>-<versão> (sem o "v" inicial); o
+  # tarball gerado por `git archive` (build-local.sh) usa o nome do pacote.
+  # Normaliza os dois formatos para o mesmo diretório.
+  if [[ ! -d "$pkgname-$pkgver" ]]; then
+    mv "MelobudsNext-Rust-$pkgver" "$pkgname-$pkgver"
+  fi
+}
 
 build() {
   cd "$pkgname-$pkgver"

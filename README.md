@@ -109,30 +109,34 @@ Linux e Windows, siga [`packaging/README.md`](packaging/README.md).
 
 ## Instalação
 
-### Arch Linux (AUR)
+### Arch Linux (`makepkg`, sem AUR)
 
-Quando a release estiver publicada, instale pelo AUR com um helper
-(`yay -S melobudsnext` ou `paru -S melobudsnext`) ou manualmente:
-
-```sh
-git clone https://aur.archlinux.org/melobudsnext.git
-cd melobudsnext
-makepkg -si
-```
-
-O PKGBUILD deste repositório fica em `packaging/aur` e pode ser testado
-localmente depois que a tag `vX.Y.Z` existir:
+O `PKGBUILD` fica em `packaging/aur` e compila a tag `vX.Y.Z` publicada no
+GitHub. Enquanto a tag não existe, o build usa a fonte local (o próprio clone)
+através de `git archive`:
 
 ```sh
-cd packaging/aur
-updpkgsums
-makepkg -si
+git clone https://github.com/Leandro-74/MelobudsNext-Rust.git
+cd MelobudsNext-Rust
+./packaging/aur/build-local.sh -si
 ```
+
+O script gera um tarball do commit atual, grava o SHA-256 dele na linha
+`sha256sums` do `PKGBUILD` e roda `makepkg`. Confirme a instalação:
+
+```sh
+melobudsnext --version
+melobudsnext-gui --version
+```
+
+O fluxo detalhado, os arquivos instalados e os passos para publicar a tag (e,
+depois, o AUR) estão em [`packaging/README.md`](packaging/README.md).
 
 ### Artefatos de release
 
-Cada release publica um `.tar.gz` para Linux, um `.zip` para Windows e o arquivo
-`SHA256SUMS`. Confira o checksum antes de instalar:
+Cada release publica um `.tar.gz` para Linux, um `melobudsnext-gui.exe` único
+para Windows (CRT estático, sem instalador) e os arquivos de checksum. Confira o
+checksum antes de instalar:
 
 ```sh
 cd dist
@@ -147,9 +151,17 @@ sudo install -Dm644 melobudsnext.svg \
   /usr/local/share/icons/hicolor/scalable/apps/melobudsnext.svg
 ```
 
-No Windows, extraia o `.zip` e execute `melobudsnext.exe` (CLI) ou
-`melobudsnext-gui.exe` (interface). O fluxo completo de geração dos artefatos e
-da tag está em [`packaging/README.md`](packaging/README.md).
+No Windows, baixe `melobudsnext-gui.exe` e o `.sha256` correspondente, confira o
+hash e execute o `.exe`:
+
+```powershell
+Get-FileHash .\melobudsnext-gui.exe -Algorithm SHA256
+```
+
+O binário não é assinado, então o SmartScreen pode pedir confirmação (**Mais
+informações → Executar assim mesmo**). O CLI de Windows fica em um `.zip`
+opcional ou pode ser compilado da fonte. O fluxo completo de geração dos
+artefatos e da tag está em [`packaging/README.md`](packaging/README.md).
 
 ## Primeira comunicação
 
