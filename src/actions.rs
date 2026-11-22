@@ -73,9 +73,19 @@ pub trait Transport: Send {
         listen: Duration,
     ) -> BoxFuture<'a, Result<Vec<Vec<u8>>>>;
 
+    /// Waits up to `wait` for one unsolicited command notification.
+    ///
+    /// This is the idle-session counterpart of [`Transport::exchange`]: it
+    /// returns as soon as a notification arrives so the GUI can mirror changes
+    /// made on the headphones, or `None` when the wait expires.
+    fn wait_notification<'a>(&'a self, wait: Duration) -> BoxFuture<'a, Result<Option<Vec<u8>>>>;
+
     /// Performs one reconnection attempt after `delay`: closes the previous
     /// link, waits, reconnects and rediscovers the services.
     fn reconnect_once<'a>(&'a mut self, delay: Duration) -> BoxFuture<'a, Result<()>>;
+
+    /// Reads the touch mapping from its own characteristic.
+    fn read_touch<'a>(&'a self) -> BoxFuture<'a, Result<TouchMapping>>;
 
     /// Writes a complete 20-byte touch mapping.
     fn write_touch<'a>(&'a self, mapping: &'a TouchMapping) -> BoxFuture<'a, Result<()>>;
@@ -105,8 +115,16 @@ impl Transport for BleSession {
         Box::pin(BleSession::exchange(self, packet, listen))
     }
 
+    fn wait_notification<'a>(&'a self, wait: Duration) -> BoxFuture<'a, Result<Option<Vec<u8>>>> {
+        Box::pin(BleSession::wait_notification(self, wait))
+    }
+
     fn reconnect_once<'a>(&'a mut self, delay: Duration) -> BoxFuture<'a, Result<()>> {
         Box::pin(BleSession::reconnect_once(self, delay))
+    }
+
+    fn read_touch<'a>(&'a self) -> BoxFuture<'a, Result<TouchMapping>> {
+        Box::pin(BleSession::read_touch(self))
     }
 
     fn write_touch<'a>(&'a self, mapping: &'a TouchMapping) -> BoxFuture<'a, Result<()>> {
@@ -223,6 +241,15 @@ pub struct CommandOutcome {
     pub warnings: Vec<String>,
     /// Whether the command triggered a reconnection.
     pub reconnected: bool,
+}
+
+/// Result of applying one unsolicited notification to the state.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct NotificationUpdate {
+    /// Whether the notification contained at least one recognized block.
+    pub changed: bool,
+    /// Notifications that could not be decoded.
+    pub warnings: Vec<String>,
 }
 
 /// Receives progress notifications while a command is being executed.
@@ -430,6 +457,48 @@ impl Controller {
         Ok(report.warnings)
     }
 
+    /// Applies the next unsolicited notification to the in-memory state.
+    ///
+    /// The wait is bounded by `wait`; a timeout returns
+    /// [`NotificationUpdate::default`] without touching the state. Invalid
+    /// notifications become warnings and also leave the state untouched.
+    pub async fn poll_notifications(&mut self, wait: Duration) -> Result<NotificationUpdate> {
+        let value = {
+            let client = self.client_ref()?;
+            client.wait_notification(wait).await?
+        };
+
+        let mut update = NotificationUpdate::default();
+        if let Some(value) = value {
+            match self.state.apply_bytes(&value) {
+                Ok(count) => update.changed = count > 0,
+                Err(error) => update
+                    .warnings
+                    .push(format!("notification {}: {error}", hex::format(&value))),
+            }
+        }
+
+        Ok(update)
+    }
+
+    /// Re-reads the touch mapping from its characteristic.
+    ///
+    /// The touch map has no command-channel notification, so the GUI polls it
+    /// while idle to reflect changes made by the official app. Returns whether
+    /// the mapping changed.
+    pub async fn refresh_touch(&mut self) -> Result<bool> {
+        let touch = {
+            let client = self.client_ref()?;
+            client.read_touch().await?
+        };
+
+        let changed = self.state.touch.as_ref() != Some(&touch);
+        if changed {
+            self.state.touch = Some(touch);
+        }
+        Ok(changed)
+    }
+
     /// Closes the link, if any.
     pub async fn disconnect(&mut self) -> Result<()> {
         if let Some(client) = self.client.take() {
@@ -610,13 +679,18 @@ mod tests {
         sync_error: Option<String>,
         exchange_results: VecDeque<Vec<Vec<u8>>>,
         exchange_error: Option<String>,
+        notifications: VecDeque<Vec<u8>>,
+        notification_error: Option<String>,
         sync_calls: usize,
         exchange_calls: usize,
+        notification_calls: usize,
         exchange_packets: Vec<Packet>,
         reconnect_calls: usize,
         reconnect_failures: usize,
         disconnect_calls: usize,
         touch_writes: Vec<TouchMapping>,
+        touch_reads: VecDeque<TouchMapping>,
+        touch_read_error: Option<String>,
     }
 
     /// Transport double scripted by the tests.
@@ -654,6 +728,14 @@ mod tests {
 
         fn push_exchange(&self, values: Vec<Vec<u8>>) {
             self.state().exchange_results.push_back(values);
+        }
+
+        fn push_notification(&self, value: Vec<u8>) {
+            self.state().notifications.push_back(value);
+        }
+
+        fn push_touch(&self, mapping: TouchMapping) {
+            self.state().touch_reads.push_back(mapping);
         }
     }
 
@@ -699,6 +781,20 @@ mod tests {
             })
         }
 
+        fn wait_notification<'a>(
+            &'a self,
+            _wait: Duration,
+        ) -> BoxFuture<'a, Result<Option<Vec<u8>>>> {
+            Box::pin(async move {
+                let mut state = self.inner.lock().unwrap();
+                state.notification_calls += 1;
+                if let Some(error) = state.notification_error.take() {
+                    return Err(anyhow!(error));
+                }
+                Ok(state.notifications.pop_front())
+            })
+        }
+
         fn reconnect_once<'a>(&'a mut self, _delay: Duration) -> BoxFuture<'a, Result<()>> {
             Box::pin(async move {
                 let mut state = self.inner.lock().unwrap();
@@ -709,6 +805,16 @@ mod tests {
                 }
                 state.connected = true;
                 Ok(())
+            })
+        }
+
+        fn read_touch<'a>(&'a self) -> BoxFuture<'a, Result<TouchMapping>> {
+            Box::pin(async move {
+                let mut state = self.inner.lock().unwrap();
+                if let Some(error) = state.touch_read_error.take() {
+                    return Err(anyhow!(error));
+                }
+                Ok(state.touch_reads.pop_front().unwrap_or_default())
             })
         }
 
@@ -1018,6 +1124,109 @@ mod tests {
         let warnings = controller.sync_current().await.unwrap();
 
         assert_eq!(warnings, vec!["battery: unavailable".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn polling_applies_an_external_change_to_the_state() {
+        use crate::protocol::anc::{AncMode, AncScene};
+
+        let connector = FakeConnector::new();
+        let transport = FakeTransport::new(ADDRESS);
+        transport.push_sync(DeviceState::default());
+        connector.push_ok(transport.clone());
+
+        let mut controller = controller(&connector);
+        controller.connect_to(ADDRESS).await.unwrap();
+
+        // ANC indoor, level 2, as if the user had changed it on the earbuds.
+        transport.push_notification(vec![0xFF, 0x05, 0x17, 0x03, 0x01, 0x01, 0x01]);
+        let update = controller
+            .poll_notifications(Duration::from_millis(10))
+            .await
+            .unwrap();
+
+        assert!(update.changed);
+        assert!(update.warnings.is_empty());
+        assert_eq!(
+            controller.state().anc,
+            AncMode::anc(AncScene::Indoor, Some(2)).unwrap()
+        );
+        assert_eq!(transport.state().notification_calls, 1);
+    }
+
+    #[tokio::test]
+    async fn polling_without_notifications_keeps_the_state() {
+        let connector = FakeConnector::new();
+        let transport = FakeTransport::new(ADDRESS);
+        transport.push_sync(state_with_game_mode(true));
+        connector.push_ok(transport.clone());
+
+        let mut controller = controller(&connector);
+        controller.connect_to(ADDRESS).await.unwrap();
+
+        let update = controller
+            .poll_notifications(Duration::from_millis(10))
+            .await
+            .unwrap();
+
+        assert!(!update.changed);
+        assert!(update.warnings.is_empty());
+        assert!(controller.state().game_mode);
+    }
+
+    #[tokio::test]
+    async fn polling_reports_invalid_notifications_without_changing_the_state() {
+        let connector = FakeConnector::new();
+        let transport = FakeTransport::new(ADDRESS);
+        transport.push_sync(DeviceState::default());
+        connector.push_ok(transport.clone());
+
+        let mut controller = controller(&connector);
+        controller.connect_to(ADDRESS).await.unwrap();
+
+        transport.push_notification(vec![0x00]);
+        let update = controller
+            .poll_notifications(Duration::from_millis(10))
+            .await
+            .unwrap();
+
+        assert!(!update.changed);
+        assert_eq!(update.warnings.len(), 1);
+        assert_eq!(controller.state(), &DeviceState::default());
+    }
+
+    #[tokio::test]
+    async fn polling_without_a_link_fails() {
+        let connector = FakeConnector::new();
+        let mut controller = controller(&connector);
+
+        let error = controller
+            .poll_notifications(Duration::from_millis(10))
+            .await
+            .unwrap_err();
+
+        assert!(error.to_string().contains("device not connected"));
+    }
+
+    #[tokio::test]
+    async fn refreshing_touch_reports_only_actual_changes() {
+        let connector = FakeConnector::new();
+        let transport = FakeTransport::new(ADDRESS);
+        transport.push_sync(DeviceState::default());
+        connector.push_ok(transport.clone());
+
+        let mut controller = controller(&connector);
+        controller.connect_to(ADDRESS).await.unwrap();
+
+        let mut mapping = TouchMapping::new();
+        mapping.set(TouchKey::RightTriple, TouchFunction::VolumeDown);
+        transport.push_touch(mapping.clone());
+
+        assert!(controller.refresh_touch().await.unwrap());
+        assert_eq!(controller.state().touch, Some(mapping.clone()));
+
+        transport.push_touch(mapping);
+        assert!(!controller.refresh_touch().await.unwrap());
     }
 
     #[tokio::test]

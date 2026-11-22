@@ -136,6 +136,12 @@ nome usam um rascunho local e o botão **Aplicar**. Depois de um comando
 bem-sucedido, o valor escolhido permanece na interface mesmo quando o firmware
 não devolve o eco dentro da janela de escuta.
 
+A GUI mantém o canal de notificações aberto em segundo plano. Mudanças feitas no
+próprio fone (alternar o ANC pelo toque, mudar o modo pelo app oficial etc.)
+aparecem sem clicar em **Atualizar**, e só os rascunhos dos campos alterados são
+recarregados. O mapa de toque não gera notificação, então ele é relido pela GUI
+ociosa a cada ~3 s.
+
 Para abrir a interface sem acessar o Bluetooth (útil para conferir o layout ou
 gravar capturas), use:
 
@@ -244,10 +250,30 @@ Python, faça uma cópia antes, porque ele espera a chave `address`.
 - Se o adaptador Bluetooth reporta estado desconhecido (`Unknown`) logo após a
   inicialização, o comando tenta novamente por até 1 s (10 tentativas de 100 ms)
   antes de falhar, em vez de abortar imediatamente.
+- A GUI processa notificações em segundo plano e atualiza o estado ao vivo. Como
+  a characteristic de toque não notifica, o mapa é relido periodicamente
+  enquanto a interface está ociosa; os demais campos de estado chegam por
+  notificação.
 - Saída `--json` é JSON puro em `stdout`.
 - Não há TUI; os comandos do CLI são de uma execução só, com `device monitor`
   para acompanhar notificações. A interface gráfica é um binário separado
   (`melobudsnext-gui`) e compartilha a mesma camada de BLE e protocolo.
+
+## Limitações conhecidas
+
+- O opcode `0x28` (ANC Wear/Result) é reconhecido, mas o conteúdo ainda não é
+  decodificado; uma notificação que traga apenas esse opcode não altera o
+  estado.
+- Notificações `0x2F`/`0x30` (bateria/versão pelo canal de comando) não são
+  tratadas; o projeto usa as characteristics diretas para essas leituras.
+- Bateria e versão do firmware são lidas ao conectar e em **Atualizar**; não há
+  atualização periódica dessas duas characteristics.
+- O mapa de toque tem atualização periódica só na GUI ociosa (~3 s). No CLI, use
+  `device read touch` ou `device info` para reler.
+- As observações de protocolo são do firmware 2.0.6 e ainda não há matriz de
+  compatibilidade por versão. Consulte
+  [`PROTOCOLO_MelobudsNext.md`](PROTOCOLO_MelobudsNext.md) e o backlog em
+  [`PENDENCIAS.md`](PENDENCIAS.md).
 
 ## Testes
 

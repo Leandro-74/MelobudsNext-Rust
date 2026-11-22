@@ -4,7 +4,7 @@ use melobudsnext::actions::ReconnectPolicy;
 use melobudsnext::config::Config;
 
 use crate::app::{update, App, Message, OFFLINE_NOTICE};
-use crate::ble_task::ActionResult;
+use crate::ble_task::{ActionResult, LiveUpdate};
 use crate::options::{AncChoice, Tab, TouchOption, VolumeOption};
 use crate::view::view;
 
@@ -125,6 +125,121 @@ fn progress_messages_update_the_busy_label() {
     app.busy = None;
     let _ = update(&mut app, Message::Progress("ignorar".to_string()));
     assert!(app.busy.is_none());
+}
+
+// -----------------------------------------------------------------------
+// IMP-01 — estado em tempo real na GUI
+// -----------------------------------------------------------------------
+
+#[test]
+fn live_update_refreshes_anc_and_touch_without_an_action() {
+    use melobudsnext::protocol::anc::{AncMode, AncScene};
+    use melobudsnext::protocol::touch::{TouchFunction, TouchKey, TouchMapping};
+    use melobudsnext::DeviceState;
+
+    let mut app = online_app();
+    app.connected = true;
+    app.load_drafts();
+
+    let mut touch = TouchMapping::new();
+    touch.set(TouchKey::LeftDouble, TouchFunction::VolumeUp);
+    let state = DeviceState {
+        anc: AncMode::anc(AncScene::Indoor, Some(2)).unwrap(),
+        touch: Some(touch.clone()),
+        ..DeviceState::default()
+    };
+
+    let _ = update(
+        &mut app,
+        Message::Live(LiveUpdate {
+            state,
+            connected: true,
+            changed: true,
+            ..LiveUpdate::default()
+        }),
+    );
+
+    assert_eq!(app.anc_choice, AncChoice::Scene(AncScene::Indoor));
+    assert_eq!(app.anc_level, 2);
+    assert_eq!(app.touch_draft, touch);
+}
+
+#[test]
+fn live_update_keeps_unrelated_drafts() {
+    use melobudsnext::protocol::anc::{AncMode, AncScene};
+    use melobudsnext::DeviceState;
+
+    let mut app = online_app();
+    app.balance = 30;
+    app.rename_input = "rascunho".to_string();
+    app.notice = Some("Aviso anterior".to_string());
+
+    let state = DeviceState {
+        anc: AncMode::anc(AncScene::Noise, Some(1)).unwrap(),
+        ..DeviceState::default()
+    };
+
+    let _ = update(
+        &mut app,
+        Message::Live(LiveUpdate {
+            state,
+            connected: true,
+            changed: true,
+            ..LiveUpdate::default()
+        }),
+    );
+
+    assert_eq!(app.anc_choice, AncChoice::Scene(AncScene::Noise));
+    assert_eq!(app.balance, 30, "an ANC change must not reset the balance");
+    assert_eq!(app.rename_input, "rascunho");
+    assert_eq!(app.notice.as_deref(), Some("Aviso anterior"));
+}
+
+#[test]
+fn live_update_is_ignored_while_an_action_is_running() {
+    use melobudsnext::protocol::anc::{AncMode, AncScene};
+    use melobudsnext::DeviceState;
+
+    let mut app = online_app();
+    app.busy = Some("Aplicando ANC…".to_string());
+
+    let state = DeviceState {
+        anc: AncMode::anc(AncScene::Wind, None).unwrap(),
+        ..DeviceState::default()
+    };
+
+    let _ = update(
+        &mut app,
+        Message::Live(LiveUpdate {
+            state,
+            connected: true,
+            changed: true,
+            ..LiveUpdate::default()
+        }),
+    );
+
+    assert_eq!(app.state.anc, AncMode::Off);
+    assert_eq!(app.busy.as_deref(), Some("Aplicando ANC…"));
+}
+
+#[test]
+fn live_update_reports_a_lost_link() {
+    let mut app = online_app();
+    app.connected = true;
+    app.notice = Some("Conectado.".to_string());
+
+    let _ = update(
+        &mut app,
+        Message::Live(LiveUpdate {
+            error: Some("notification stream closed".to_string()),
+            connected: false,
+            ..LiveUpdate::default()
+        }),
+    );
+
+    assert!(!app.connected);
+    assert_eq!(app.error.as_deref(), Some("notification stream closed"));
+    assert!(app.notice.is_none());
 }
 
 // -----------------------------------------------------------------------
