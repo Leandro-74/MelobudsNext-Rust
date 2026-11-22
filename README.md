@@ -460,8 +460,9 @@ Python, faça uma cópia antes, porque ele espera a chave `address`.
   [`PROTOCOLO_MelobudsNext.md`](PROTOCOLO_MelobudsNext.md) e o backlog em
   [`PENDENCIAS.md`](PENDENCIAS.md).
 - O `melobudsnext-gui.exe` de Windows é gerado por build cruzado (`cargo-xwin`)
-  com CRT estático, mas ainda não foi executado em um Windows real: a conexão ao
-  fone nessa plataforma segue como validação manual pendente.
+  com CRT estático e ícone embutido, sem depender do Redistributable. A execução
+  e a conexão com o fone foram validadas manualmente pelo usuário em um Windows
+  real; a instalação do pacote Arch em ambiente limpo segue pendente.
 
 ## Testes
 
