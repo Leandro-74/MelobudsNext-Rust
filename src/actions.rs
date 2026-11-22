@@ -12,7 +12,7 @@ use std::time::Duration;
 
 use anyhow::{anyhow, Result};
 
-use crate::ble::{BleSession, SyncReport};
+use crate::ble::{BleSession, ExchangeReport, SyncReport};
 use crate::config::BleUuids;
 use crate::hex;
 use crate::protocol::commands;
@@ -67,11 +67,16 @@ pub trait Transport: Send {
     fn sync<'a>(&'a self, listen: Duration) -> BoxFuture<'a, Result<SyncReport>>;
 
     /// Writes a packet and collects the notifications it triggers.
+    ///
+    /// The report distinguishes a write failure (returned as `Err`) from a
+    /// link that drops after the write (`link_lost`), which commands that
+    /// restart the headphones treat as the start of the reconnection instead
+    /// of an error.
     fn exchange<'a>(
         &'a self,
         packet: &'a Packet,
         listen: Duration,
-    ) -> BoxFuture<'a, Result<Vec<Vec<u8>>>>;
+    ) -> BoxFuture<'a, Result<ExchangeReport>>;
 
     /// Waits up to `wait` for one unsolicited command notification.
     ///
@@ -111,7 +116,7 @@ impl Transport for BleSession {
         &'a self,
         packet: &'a Packet,
         listen: Duration,
-    ) -> BoxFuture<'a, Result<Vec<Vec<u8>>>> {
+    ) -> BoxFuture<'a, Result<ExchangeReport>> {
         Box::pin(BleSession::exchange(self, packet, listen))
     }
 
@@ -523,10 +528,20 @@ impl Controller {
         options: &CommandOptions,
         observer: &mut dyn CommandObserver,
     ) -> Result<CommandOutcome> {
-        let values = {
+        let report = {
             let client = self.client_ref()?;
             client.exchange(packet, options.listen).await?
         };
+
+        // Only commands that restart the headphones may continue after the
+        // link drops. For every other command a lost link is still an error,
+        // so a real disconnect is never hidden by an echo that happened to
+        // arrive first.
+        if report.link_lost && !options.reconnect {
+            return Err(anyhow!("BLE link lost; connect again"));
+        }
+
+        let values = report.notifications;
 
         for value in &values {
             observer.notification(value);
@@ -606,11 +621,18 @@ impl Controller {
     /// Renames the device, keeping the requested name when it is not echoed.
     pub async fn rename(&mut self, name: &str) -> Result<CommandOutcome> {
         let packet = commands::rename(name).map_err(anyhow::Error::new)?;
-        let values = {
+        let report = {
             let client = self.client_ref()?;
             client.exchange(&packet, COMMAND_WINDOW).await?
         };
 
+        // Rename does not restart the headphones, so a drop after the write is
+        // a real error rather than a reconnection trigger.
+        if report.link_lost {
+            return Err(anyhow!("BLE link lost; connect again"));
+        }
+
+        let values = report.notifications;
         let warnings = apply_command_result(&mut self.state, &packet, &values);
 
         // Some firmware revisions do not echo the rename; keep the requested
@@ -661,7 +683,7 @@ mod tests {
         apply_command_result, discards_client, BoxFuture, CommandObserver, CommandOptions,
         ConnectError, Connector, Controller, Transport,
     };
-    use crate::ble::SyncReport;
+    use crate::ble::{ExchangeReport, SyncReport};
     use crate::config::BleUuids;
     use crate::protocol::commands;
     use crate::protocol::framing::Packet;
@@ -677,7 +699,7 @@ mod tests {
         is_connected_error: bool,
         sync_results: VecDeque<SyncReport>,
         sync_error: Option<String>,
-        exchange_results: VecDeque<Vec<Vec<u8>>>,
+        exchange_results: VecDeque<ExchangeReport>,
         exchange_error: Option<String>,
         notifications: VecDeque<Vec<u8>>,
         notification_error: Option<String>,
@@ -727,7 +749,17 @@ mod tests {
         }
 
         fn push_exchange(&self, values: Vec<Vec<u8>>) {
-            self.state().exchange_results.push_back(values);
+            self.state().exchange_results.push_back(ExchangeReport {
+                notifications: values,
+                link_lost: false,
+            });
+        }
+
+        fn push_exchange_with_link_lost(&self, values: Vec<Vec<u8>>) {
+            self.state().exchange_results.push_back(ExchangeReport {
+                notifications: values,
+                link_lost: true,
+            });
         }
 
         fn push_notification(&self, value: Vec<u8>) {
@@ -769,7 +801,7 @@ mod tests {
             &'a self,
             packet: &'a Packet,
             _listen: Duration,
-        ) -> BoxFuture<'a, Result<Vec<Vec<u8>>>> {
+        ) -> BoxFuture<'a, Result<ExchangeReport>> {
             Box::pin(async move {
                 let mut state = self.inner.lock().unwrap();
                 state.exchange_calls += 1;
@@ -1331,6 +1363,131 @@ mod tests {
         assert_eq!(controller.state().channel_balance, 20);
         // The CLI policy does not apply the requested packet after a reconnection.
         assert!(!controller.state().ldac);
+    }
+
+    #[tokio::test]
+    async fn ldac_reconnects_when_the_link_drops_after_the_write() {
+        let connector = FakeConnector::new();
+        let transport = FakeTransport::new(ADDRESS);
+        transport.push_sync(DeviceState::default());
+        connector.push_ok(transport.clone());
+
+        let mut controller = controller(&connector);
+        controller.connect_to(ADDRESS).await.unwrap();
+
+        // The packet is written and then the link dies before any echo can be
+        // collected, exactly like the LDAC restart on firmware 2.0.6.
+        transport.push_exchange_with_link_lost(Vec::new());
+        transport.push_sync(DeviceState {
+            ldac: true,
+            ..DeviceState::default()
+        });
+
+        let policy = super::ReconnectPolicy {
+            attempts: 3,
+            delay: Duration::ZERO,
+        };
+        let mut observer = RecordingObserver::default();
+        let outcome = controller
+            .command_with(
+                &commands::ldac(true),
+                &CommandOptions::cli(Duration::from_millis(10), true).with_reconnect_policy(policy),
+                &mut observer,
+            )
+            .await
+            .unwrap();
+
+        assert!(outcome.reconnected);
+        assert_eq!(observer.reconnections, 1);
+        assert_eq!(observer.attempts, vec![(1, 3)]);
+        assert_eq!(transport.state().reconnect_calls, 1);
+        assert_eq!(
+            transport.state().exchange_packets,
+            vec![commands::ldac(true)]
+        );
+        assert!(controller.state().ldac);
+    }
+
+    #[tokio::test]
+    async fn gui_ldac_keeps_the_requested_value_when_the_link_drops_after_the_write() {
+        let connector = FakeConnector::new();
+        let transport = FakeTransport::new(ADDRESS);
+        transport.push_sync(DeviceState::default());
+        connector.push_ok(transport.clone());
+
+        let mut controller = controller(&connector);
+        controller.connect_to(ADDRESS).await.unwrap();
+        transport.push_exchange_with_link_lost(Vec::new());
+        transport.push_sync(DeviceState::default());
+
+        controller
+            .command(&commands::ldac(true), &CommandOptions::gui(true))
+            .await
+            .unwrap();
+
+        assert_eq!(transport.state().reconnect_calls, 1);
+        // The post-reconnection sync did not report LDAC, so the GUI keeps the
+        // value the user asked for.
+        assert!(controller.state().ldac);
+    }
+
+    #[tokio::test]
+    async fn link_lost_after_write_still_fails_for_commands_without_reconnect() {
+        let connector = FakeConnector::new();
+        let transport = FakeTransport::new(ADDRESS);
+        transport.push_sync(DeviceState::default());
+        connector.push_ok(transport.clone());
+
+        let mut controller = controller(&connector);
+        controller.connect_to(ADDRESS).await.unwrap();
+        transport.push_exchange_with_link_lost(vec![vec![0xFF, 0x03, 0x09, 0x01, 0x01]]);
+
+        let error = controller
+            .command(&commands::game_mode(true), &CommandOptions::gui(false))
+            .await
+            .unwrap_err();
+
+        assert!(error.to_string().contains("BLE link lost"));
+        assert_eq!(transport.state().reconnect_calls, 0);
+        assert!(!controller.state().game_mode);
+    }
+
+    #[tokio::test]
+    async fn a_write_failure_before_the_link_drops_is_still_an_error_for_ldac() {
+        let connector = FakeConnector::new();
+        let transport = FakeTransport::new(ADDRESS);
+        transport.push_sync(DeviceState::default());
+        connector.push_ok(transport.clone());
+
+        let mut controller = controller(&connector);
+        controller.connect_to(ADDRESS).await.unwrap();
+        transport.state().exchange_error = Some("write failed".to_string());
+
+        let error = controller
+            .command(&commands::ldac(true), &CommandOptions::gui(true))
+            .await
+            .unwrap_err();
+
+        assert!(error.to_string().contains("write failed"));
+        assert_eq!(transport.state().reconnect_calls, 0);
+        assert!(!controller.state().ldac);
+    }
+
+    #[tokio::test]
+    async fn rename_does_not_mask_a_link_lost_after_the_write() {
+        let connector = FakeConnector::new();
+        let transport = FakeTransport::new(ADDRESS);
+        transport.push_sync(DeviceState::default());
+        connector.push_ok(transport.clone());
+
+        let mut controller = controller(&connector);
+        controller.connect_to(ADDRESS).await.unwrap();
+        transport.push_exchange_with_link_lost(Vec::new());
+
+        let error = controller.rename("Meu Fone").await.unwrap_err();
+
+        assert!(error.to_string().contains("BLE link lost"));
+        assert_eq!(controller.state().name, None);
     }
 
     #[test]

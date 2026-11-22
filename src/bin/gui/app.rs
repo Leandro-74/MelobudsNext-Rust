@@ -423,6 +423,10 @@ pub(crate) fn live_updates(session: Session) -> impl futures::Stream<Item = Mess
                     return Some((Message::Live(update), session));
                 }
             }
+
+            // Yield between idle polls so a queued action can take the session
+            // mutex instead of the live loop reacquiring it immediately.
+            tokio::task::yield_now().await;
         }
     })
 }

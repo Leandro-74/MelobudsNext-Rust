@@ -291,6 +291,10 @@ O fone pode enviar 3 ou 4 bytes de parâmetro. Quando vier com 3, o campo `tone`
 
 - Envio: `[01]` ligar, `[02]` desligar.
 - Estado: `[01]` indica ligado.
+- Reinício: mudar o LDAC reinicia o fone e derruba o link antes de o comando ser
+  ecoado. O cliente trata a queda que ocorre **depois** da escrita como parte da
+  reconexão e sincroniza o estado novo; uma falha de escrita ou uma queda em
+  comando que não reinicia continua sendo erro.
 
 ### 7.7 Sleep Mode (`0x10`)
 
@@ -452,8 +456,8 @@ O roteiro está em
 | Conexão e sync | `device info`, `read battery`, `read firmware`, `read touch` OK |
 | Comandos | game, sleep, ANC (cenas, níveis, vento, adaptativo, transparência e desligado), balanço, volume, detecção de uso, rename e `send` OK |
 | Notificações | `0x28` observado após mudanças de ANC; `0x2F`/`0x30` não emitidos; `0x14` respondeu à consulta |
-| LDAC | valor aplicado, mas o comando terminou com "BLE link lost" (COR-11) |
-| GUI | `--offline --config <fictício>` abriu sem erro; a janela foi encerrada pelo timeout |
+| LDAC | `device ldac off` e `on` com `--reconnect-attempts 3 --reconnect-delay 1` reconectaram e terminaram com o estado final, sem "BLE link lost" |
+| GUI | `--offline --config <fictício>` abriu sem erro; toggle LDAC reconectou e exibiu o estado final |
 
 O `device monitor` não encerrou sozinho quando o link foi derrubado por outro
 processo; ele ficou aguardando até o timeout do teste. Isso não impediu a
@@ -485,6 +489,9 @@ resolvidos aqui não sejam confundidos com o histórico do Python.
 - **Protocolo tolerante**: valores desconhecidos são preservados; `0x28` é
   exposto como `AncWearResult` sem substituir o estado de ANC; `0x2F`/`0x30`
   são decodificados se aparecerem, embora o firmware 2.0.6 não os envie.
+- **LDAC**: a queda de link que o reinício provoca é tratada como parte da
+  reconexão (`ExchangeReport::link_lost`); uma falha de escrita ou uma queda em
+  comando que não reinicia o fone continua sendo erro.
 - **Testes automatizados**: unitários da biblioteca, da GUI e de integração,
   cobrindo framing, opcodes, ANC, toque, bateria, firmware, estado,
   configuração, controlador e regressões dos defeitos corrigidos.
@@ -501,7 +508,6 @@ seção 8.1 lista apenas o que foi observado.
 
 | Item | Situação |
 | --- | --- |
-| `COR-11` | O LDAC aplica o valor, mas o firmware 2.0.6 derruba o link antes do fim do comando; o port ainda reporta erro em vez de concluir a reconexão. |
 | `MEL-05` | Ecos de `0x10`, `0x16`, `0x1D` e `0x2C` podem chegar depois da janela do comando, deixando a saída uma ação atrasada. |
 | `PRO-05` | O quarto byte do `0x2C` varia (`00`, `A0`, `5D`) e ainda não foi identificado; não deve ser tratado como configuração confirmada. |
 | Captura de `0x2F`/`0x30` | Os decodificadores existem, mas os opcodes nunca foram observados no firmware 2.0.6. |
