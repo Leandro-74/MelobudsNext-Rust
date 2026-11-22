@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=MelobudsNext
+GenericName=Controle do QCY Melobuds Pro
+Comment=Painel gráfico para controlar o fone QCY Melobuds Pro via Bluetooth
+Exec=melobudsnext-gui
+Icon=melobudsnext
+Terminal=false
+Categories=AudioVideo;
+Keywords=bluetooth;headphones;qcy;anc;ldac;
+StartupWMClass=melobudsnext-gui

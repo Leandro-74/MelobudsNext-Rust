@@ -107,6 +107,50 @@ podem ser executados da mesma forma com `--no-default-features`.
 Para gerar um pacote instalável no Arch Linux ou os artefatos de release para
 Linux e Windows, siga [`packaging/README.md`](packaging/README.md).
 
+## Instalação
+
+### Arch Linux (AUR)
+
+Quando a release estiver publicada, instale pelo AUR com um helper
+(`yay -S melobudsnext` ou `paru -S melobudsnext`) ou manualmente:
+
+```sh
+git clone https://aur.archlinux.org/melobudsnext.git
+cd melobudsnext
+makepkg -si
+```
+
+O PKGBUILD deste repositório fica em `packaging/aur` e pode ser testado
+localmente depois que a tag `vX.Y.Z` existir:
+
+```sh
+cd packaging/aur
+updpkgsums
+makepkg -si
+```
+
+### Artefatos de release
+
+Cada release publica um `.tar.gz` para Linux, um `.zip` para Windows e o arquivo
+`SHA256SUMS`. Confira o checksum antes de instalar:
+
+```sh
+cd dist
+sha256sum -c melobudsnext-<versão>-x86_64-unknown-linux-gnu.tar.gz.sha256
+tar -xzf melobudsnext-<versão>-x86_64-unknown-linux-gnu.tar.gz
+cd melobudsnext-<versão>-x86_64-unknown-linux-gnu
+sudo install -Dm755 melobudsnext /usr/local/bin/melobudsnext
+sudo install -Dm755 melobudsnext-gui /usr/local/bin/melobudsnext-gui
+sudo install -Dm644 melobudsnext.desktop \
+  /usr/local/share/applications/melobudsnext.desktop
+sudo install -Dm644 melobudsnext.svg \
+  /usr/local/share/icons/hicolor/scalable/apps/melobudsnext.svg
+```
+
+No Windows, extraia o `.zip` e execute `melobudsnext.exe` (CLI) ou
+`melobudsnext-gui.exe` (interface). O fluxo completo de geração dos artefatos e
+da tag está em [`packaging/README.md`](packaging/README.md).
+
 ## Primeira comunicação
 
 1. Ligue o fone e desconecte-o do celular/app QCY (o fone aceita um host por vez).

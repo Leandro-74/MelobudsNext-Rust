@@ -1,0 +1,37 @@
+# Maintainer: MelobudsNext contributors
+pkgname=melobudsnext
+pkgver=0.1.0
+pkgrel=1
+pkgdesc='Controle do QCY Melobuds Pro via Bluetooth Low Energy'
+arch=('x86_64' 'aarch64')
+url='https://github.com/Leandro-74/MelobudsNext-Rust'
+license=('MIT')
+depends=('dbus' 'bluez' 'libxkbcommon' 'wayland')
+makedepends=('cargo' 'rust' 'pkgconf')
+source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
+sha256sums=('SKIP')
+
+build() {
+  cd "$pkgname-$pkgver"
+  cargo build --release --locked
+}
+
+check() {
+  cd "$pkgname-$pkgver"
+  cargo test --release --all-targets --locked
+}
+
+package() {
+  cd "$pkgname-$pkgver"
+
+  install -Dm755 target/release/melobudsnext "$pkgdir/usr/bin/melobudsnext"
+  install -Dm755 target/release/melobudsnext-gui "$pkgdir/usr/bin/melobudsnext-gui"
+  install -Dm644 packaging/melobudsnext.desktop \
+    "$pkgdir/usr/share/applications/melobudsnext.desktop"
+  install -Dm644 assets/logo.svg \
+    "$pkgdir/usr/share/icons/hicolor/scalable/apps/melobudsnext.svg"
+  install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+  install -Dm644 README.md "$pkgdir/usr/share/doc/$pkgname/README.md"
+  install -Dm644 PROTOCOLO_MelobudsNext.md \
+    "$pkgdir/usr/share/doc/$pkgname/PROTOCOLO_MelobudsNext.md"
+}

@@ -1,0 +1,19 @@
+pkgbase = melobudsnext
+	pkgdesc = Controle do QCY Melobuds Pro via Bluetooth Low Energy
+	pkgver = 0.1.0
+	pkgrel = 1
+	url = https://github.com/Leandro-74/MelobudsNext-Rust
+	arch = x86_64
+	arch = aarch64
+	license = MIT
+	makedepends = cargo
+	makedepends = rust
+	makedepends = pkgconf
+	depends = dbus
+	depends = bluez
+	depends = libxkbcommon
+	depends = wayland
+	source = melobudsnext-0.1.0.tar.gz::https://github.com/Leandro-74/MelobudsNext-Rust/archive/refs/tags/v0.1.0.tar.gz
+	sha256sums = SKIP
+
+pkgname = melobudsnext
