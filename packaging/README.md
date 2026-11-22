@@ -76,7 +76,9 @@ rustup target add x86_64-pc-windows-msvc
 
 O script compila com `--locked`, copia o executável para
 `dist/melobudsnext-gui.exe` e grava `dist/melobudsnext-gui.exe.sha256`. O
-primeiro build baixa o CRT/SDK da Microsoft, então precisa de rede.
+primeiro build baixa o CRT/SDK da Microsoft, então precisa de rede. O linker
+emite avisos `LNK4099` sobre PDBs do CRT que não acompanham o pacote do SDK; eles
+não afetam o executável gerado.
 
 Confira se o binário não depende do Redistributable:
 
@@ -86,7 +88,8 @@ llvm-objdump -p dist/melobudsnext-gui.exe | grep 'DLL Name'
 
 A saída deve listar apenas DLLs do próprio Windows (`KERNEL32.dll`,
 `USER32.dll`, `bcryptprimitives.dll` etc.), sem `VCRUNTIME140.dll` nem
-`MSVCP140.dll`.
+`MSVCP140.dll`. O binário usa o subsistema de GUI (`Subsystem 00000002`), então
+não abre uma janela de console junto com a interface.
 
 ### Aviso do SmartScreen
 

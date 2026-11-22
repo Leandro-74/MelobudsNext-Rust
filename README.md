@@ -459,6 +459,9 @@ Python, faça uma cópia antes, porque ele espera a chave `address`.
   terceiros não foram reproduzidas. Consulte
   [`PROTOCOLO_MelobudsNext.md`](PROTOCOLO_MelobudsNext.md) e o backlog em
   [`PENDENCIAS.md`](PENDENCIAS.md).
+- O `melobudsnext-gui.exe` de Windows é gerado por build cruzado (`cargo-xwin`)
+  com CRT estático, mas ainda não foi executado em um Windows real: a conexão ao
+  fone nessa plataforma segue como validação manual pendente.
 
 ## Testes
 
