@@ -1,6 +1,6 @@
 # Maintainer: MelobudsNext contributors
 pkgname=melobudsnext
-pkgver=0.1.0
+pkgver=0.2.0
 pkgrel=1
 pkgdesc='Controle do QCY Melobuds Pro via Bluetooth Low Energy'
 arch=('x86_64' 'aarch64')
