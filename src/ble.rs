@@ -69,6 +69,21 @@ pub struct SyncReport {
     pub warnings: Vec<String>,
 }
 
+/// Result of one command exchange.
+///
+/// `link_lost` records whether the link disappeared **after** the packet was
+/// written. Commands that restart the headphones (such as LDAC) use this flag
+/// to reconnect instead of reporting the expected drop as a failure. Failures
+/// that happen before the write are still returned as `Err`, so a real problem
+/// is never confused with the expected restart.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct ExchangeReport {
+    /// Notifications collected while waiting for the command echoes.
+    pub notifications: Vec<Vec<u8>>,
+    /// Whether the link was lost after the packet was written.
+    pub link_lost: bool,
+}
+
 /// Tracks which query responses already arrived during a sync.
 ///
 /// `sync` ends as soon as every target answered plus a short grace period,
@@ -565,7 +580,13 @@ impl BleSession {
     }
 
     /// Writes a packet and collects the notifications it triggers.
-    pub async fn exchange(&self, packet: &Packet, listen: Duration) -> Result<Vec<Vec<u8>>> {
+    ///
+    /// A write failure is returned as `Err` because the command was not
+    /// delivered. A link that disappears after a successful write is reported
+    /// in [`ExchangeReport::link_lost`] instead, so a command that restarts the
+    /// headphones can reconnect while other commands still treat the drop as an
+    /// error.
+    pub async fn exchange(&self, packet: &Packet, listen: Duration) -> Result<ExchangeReport> {
         let mut slot = self.notification_stream().await?;
         let notifications = slot
             .as_mut()
@@ -573,8 +594,14 @@ impl BleSession {
         self.write_command(packet).await?;
         let values = receive_values(notifications, self.notification.uuid, listen).await;
         drop(slot);
-        self.ensure_link().await?;
-        Ok(values)
+
+        // An inconclusive probe is treated as a lost link, matching the
+        // session policy used when a failed action discards the client.
+        let link_lost = !self.is_connected().await.unwrap_or(false);
+        Ok(ExchangeReport {
+            notifications: values,
+            link_lost,
+        })
     }
 
     pub async fn disconnect(&self) -> Result<()> {
