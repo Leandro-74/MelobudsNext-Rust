@@ -559,8 +559,8 @@ Levantamento feito a partir da análise do repositório no commit `4028131`
 - **Prioridade:** P2
 - **Onde:** `packaging/aur/PKGBUILD`, `packaging/README.md`, `README.md`
 - **Problema:** enquanto o pacote não estiver no AUR, não há um fluxo publicado
-  e testado para o usuário instalar com `makepkg`; o `PKGBUILD` ainda aponta
-  para uma tag inexistente e usa `sha256sums=('SKIP')`.
+  e testado para o usuário instalar com `makepkg`; o `PKGBUILD` ainda apontava
+  para uma tag inexistente e usava `sha256sums=('SKIP')`.
 - **Ação:** depois de criar a tag `vX.Y.Z`, atualizar `pkgver`, gerar o
   checksum real com `updpkgsums`, regenerar `.SRCINFO` e testar `makepkg -si`
   em uma instalação Arch limpa (chroot ou VM). Distribuir o `PKGBUILD` no
@@ -568,14 +568,16 @@ Levantamento feito a partir da análise do repositório no commit `4028131`
 - **Pronto quando:** um usuário Arch instalar o pacote apenas seguindo a
   documentação, sem depender do AUR, e a instalação for validada em ambiente
   limpo.
+- **Status:** Implementado no Lote 9 (build e pacote validados no Arch x86_64
+  atual com fonte local; instalação em ambiente limpo ainda pendente).
 
 ### INF-07 — Executável Windows único (GUI) com CRT estático
 - **Prioridade:** P2
-- **Onde:** `packaging/windows/build-release.ps1`, `packaging/README.md`,
-  `README.md`
-- **Problema:** o script atual gera um `.zip` com os dois executáveis e o build
-  MSVC padrão depende do Visual C++ Redistributable. O objetivo é distribuir um
-  executável simples, sem instalador.
+- **Onde:** `packaging/windows/build-release.ps1`,
+  `packaging/windows/build-release-xwin.sh`, `packaging/README.md`, `README.md`
+- **Problema:** o script antigo gerava um `.zip` com os dois executáveis e o
+  build MSVC padrão dependia do Visual C++ Redistributable. O objetivo é
+  distribuir um executável simples, sem instalador.
 - **Ação:** gerar `melobudsnext-gui.exe` com CRT estático
   (`RUSTFLAGS="-C target-feature=+crt-static"` no alvo
   `x86_64-pc-windows-msvc`), mantendo os assets embutidos; publicar o `.exe`
@@ -583,6 +585,8 @@ Levantamento feito a partir da análise do repositório no commit `4028131`
   SmartScreen. O CLI pode continuar disponível via fonte ou em um zip opcional.
 - **Pronto quando:** o `.exe` abrir e conectar ao fone em um Windows real sem
   instalar o Redistributable, com o fluxo documentado.
+- **Status:** Implementado no Lote 9 (build cruzado com `cargo-xwin`, imports
+  conferidos e SHA-256 gerado; execução em Windows real pendente).
 
 ---
 
@@ -932,10 +936,12 @@ executável Windows único.
 | INF-06 | Fluxo `makepkg` validado em Arch limpo, com checksum real e instruções |
 | INF-07 | `melobudsnext-gui.exe` único com CRT estático e checksum |
 
-**Gate extra:** instalar via `makepkg -si` em um Arch limpo e abrir o `.exe` em
-um Windows real, conectando ao fone.
-**Pronto quando:** os dois caminhos de instalação estiverem documentados,
-testados e publicáveis no GitHub Releases; o AUR fica para uma etapa posterior.
+**Gate extra:** build pronto; validação Windows pendente (usuário). O pacote do
+Arch foi compilado, testado e inspecionado localmente; a execução do `.exe` em um
+Windows real (com conexão ao fone) e a instalação do pacote em um Arch limpo
+(chroot/VM) ficam para a validação manual.
+**Pronto quando:** os dois caminhos de instalação estiverem documentados e
+publicáveis no GitHub Releases; o AUR fica para uma etapa posterior.
 
 ### Ordem, dependências e status
 
@@ -950,7 +956,7 @@ testados e publicáveis no GitHub Releases; o AUR fica para uma etapa posterior.
 | 6 | `feat/protocolo-hardware` | 0, 2 | 6 | Implementado (323e95f, 2026-11-22) |
 | 7 | `chore/docs-release` | todos | 4 | Implementado (d0daecb, 2026-11-22) |
 | 8 | `fix/ldac-reconexao` | 1, 2, 6 | 2 | Implementado (d4d85df, 2026-11-22) |
-| 9 | `chore/distribuicao` | 7, 8 | 2 | Pendente |
+| 9 | `chore/distribuicao` | 7, 8 | 2 | Implementado (`25348f2`, 2026-11-22; validação Windows pendente) |
 
 > Total: 48 itens nos lotes planejados (44 originais, mais COR-11 e COR-12 no
 > Lote 8 e INF-06/INF-07 no Lote 9), mais TST-08, MEL-05 e PRO-05, ainda sem
@@ -1405,6 +1411,67 @@ Cada sessão adiciona aqui a subseção do lote concluído, antes do merge.
   - Recomendação para o Lote 9: a distribuição pode começar; o COR-11 não
     bloqueia mais a release.
 
+#### Lote 9 — Distribuição (Arch via makepkg e Windows standalone)
+
+- **Status:** Implementado (build pronto; validação Windows pendente)
+- **Branch:** `chore/distribuicao`
+- **Commits:** `cccc2fe` (Arch), `25348f2` (Windows), `232a739` (subsistema de
+  GUI), `93e0485` (docs)
+- **Validação:** gate completo na branch e na `main` (`cargo fmt --check`,
+  `cargo clippy --all-targets -- -D warnings`, `cargo test --all-targets` com
+  135 testes da lib + 36 da GUI + 8 de integração, `cargo build --release`).
+  Arch: `./packaging/aur/build-local.sh` (fonte local via `git archive`) gerou
+  `melobudsnext-0.1.0-1-x86_64.pkg.tar.zst` e o pacote de debug, com `check()`
+  rodando a suíte completa; a lista de arquivos do pacote foi conferida e, após
+  extrair o `.pkg.tar.zst` em diretório temporário, `melobudsnext --version` e
+  `melobudsnext-gui --version` responderam `0.1.0`. O `prepare()` foi testado com
+  um tarball com prefixo `MelobudsNext-Rust-0.1.0/` (formato do GitHub) e
+  normalizou o diretório corretamente. Windows: `cargo-xwin` 0.24.1 gerou
+  `dist/melobudsnext-gui.exe` (7,0 MiB, SHA-256
+  `c366474aa2e57f3911b3545d38b381b091f6a794afc7c34aedac403e97965ab6`); os
+  imports não incluem `VCRUNTIME140.dll`/`MSVCP140.dll` e o subsistema é
+  `00000002 (Windows GUI)`. O `.exe` **não** foi executado: sem Windows/wine
+  nesta sessão, a validação no fone fica pendente com o usuário.
+- **Notas:**
+  - O `PKGBUILD` apontava para uma tag inexistente e o tarball do GitHub extrai
+    como `MelobudsNext-Rust-<versão>` (o GitHub remove o `v` do diretório), mas
+    `build()`/`package()` faziam `cd "$pkgname-$pkgver"`. Um `prepare()` agora
+    move o diretório para `melobudsnext-<versão>` quando necessário, aceitando
+    tanto o tarball do GitHub quanto o gerado por `git archive`.
+  - `sha256sums` deixou de ser `SKIP`: o valor gravado é o do último snapshot
+    validado por `build-local.sh`. Como o hash não pode fazer parte do próprio
+    tarball, o script sempre regenera o tarball com `git archive`, atualiza a
+    linha com `sed` e só então chama `makepkg`; o `PKGBUILD` fica modificado no
+    working tree de propósito (revisar antes de commitar). Depois da tag, rode
+    `updpkgsums` e regenere o `.SRCINFO`.
+  - `packaging/aur/build-local.sh` valida o caminho sem AUR: `git archive` do
+    commit atual em `packaging/aur/melobudsnext-<versão>.tar.gz` (ignorado pelo
+    git), checksum, `makepkg "$@"`; `-si` instala. O `.gitignore` passou a cobrir
+    `src/`, `pkg/`, `*.pkg.tar.*` e o tarball local de `packaging/aur`.
+  - Windows: o script PowerShell agora gera só `melobudsnext-gui.exe` com
+    `-C target-feature=+crt-static` (mais o `.sha256`); `-WithCli` opcional cria
+    o `.zip` com os dois binários. `build-release-xwin.sh` faz o mesmo build
+    cruzado no Linux e é o caminho usado nesta validação.
+  - Descoberta no build cruzado: o binário da GUI saía com subsistema de console
+    (`00000003`) porque faltava `#![windows_subsystem = "windows"]`; o atributo
+    foi adicionado em `src/bin/gui.rs` com `cfg_attr(windows, ...)`, sem efeito
+    nas outras plataformas. Sem ele, um duplo clique abriria uma janela de
+    console junto da interface.
+  - Armadilha: o linker do `cargo-xwin` emite `LNK4099` porque os PDBs do CRT não
+    acompanham o SDK baixado. É ruído esperado e documentado em
+    `packaging/README.md`; não altera o executável.
+  - O artefato de Windows fica em `dist/` (ignorado pelo git); o checksum é
+    publicado junto do `.exe` no GitHub Releases. O `.exe` não é assinado, então
+    o SmartScreen pedirá confirmação.
+  - Dívidas: executar o `.exe` em um Windows real (conectando ao fone) é a única
+    parte do gate do lote não cumprida; a instalação do pacote em um Arch limpo
+    (chroot/VM) também não foi feita — o `makepkg` rodou no Arch atual. A versão
+    continua `0.1.0` (o bump é do lote de release), o AUR não foi submetido e o
+    `.SRCINFO` precisa ser regerado depois do `updpkgsums`.
+  - Recomendação para a release: criar a tag, rodar `updpkgsums`, regerar o
+    `.SRCINFO`, instalar via `makepkg -si` em um Arch limpo e abrir o `.exe` em
+    Windows; só depois publicar os artefatos e o `SHA256SUMS`.
+
 ## Checklist de release (após o Lote 9)
 
 Pré-requisitos: Lotes 0–9 concluídos, `main` limpa, gate verde e limitações
@@ -1417,13 +1484,15 @@ conhecidas documentadas.
 4. Criar a tag anotada `vX.Y.Z` — o `PKGBUILD` e o script de Windows dependem
    dela.
 5. **Arch (makepkg, sem AUR):** em `packaging/aur`, atualizar `pkgver`, rodar
-   `updpkgsums` para gerar o checksum real e regerar o `.SRCINFO`; testar
-   `makepkg -si` em um Arch limpo. Publicar o `PKGBUILD`/`.SRCINFO` no
-   repositório e anexar as instruções à release; o AUR entra depois.
-6. **Windows (executável único):** gerar `melobudsnext-gui.exe` com CRT estático
-   (`RUSTFLAGS="-C target-feature=+crt-static"` no alvo
-   `x86_64-pc-windows-msvc`), testar em um Windows real e gerar o SHA-256.
-   Opcional: um `.zip` com o CLI para quem quiser usar o terminal.
+   `updpkgsums`, regerar o `.SRCINFO` e validar com
+   `./packaging/aur/build-local.sh -si` (ou `makepkg -si` com a tag publicada)
+   em um Arch limpo. Publicar o `PKGBUILD`/`.SRCINFO` no repositório e anexar as
+   instruções à release; o AUR entra depois.
+6. **Windows (executável único):** rodar
+   `packaging/windows/build-release.ps1` (ou `build-release-xwin.sh` no Linux)
+   para gerar `melobudsnext-gui.exe` com CRT estático e o SHA-256; abrir o `.exe`
+   em um Windows real e conectar ao fone. Opcional: `-WithCli` gera um `.zip`
+   com o CLI para quem quiser usar o terminal.
 7. Publicar a release no GitHub com o `.exe`, checksums, `PKGBUILD`, notas e
    limitações conhecidas (MEL-05, PRO-05, firmware 2.0.6 e status da validação
    Linux/Windows).

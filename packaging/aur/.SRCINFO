@@ -14,6 +14,6 @@ pkgbase = melobudsnext
 	depends = libxkbcommon
 	depends = wayland
 	source = melobudsnext-0.1.0.tar.gz::https://github.com/Leandro-74/MelobudsNext-Rust/archive/refs/tags/v0.1.0.tar.gz
-	sha256sums = SKIP
+	sha256sums = 8b4551a9787282ecb671e39dd2689371f2ffaf5832c3062ac4f498d14e8d0e94
 
 pkgname = melobudsnext
