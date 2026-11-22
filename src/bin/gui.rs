@@ -5,6 +5,9 @@
 //! the right. Every action still goes through the same protocol and BLE layer
 //! used by the CLI.
 
+// O executável de Windows é uma GUI: sem console aberto junto com a janela.
+#![cfg_attr(windows, windows_subsystem = "windows")]
+
 #[path = "gui/app.rs"]
 mod app;
 #[path = "gui/ble_task.rs"]
