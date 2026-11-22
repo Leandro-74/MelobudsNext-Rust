@@ -1,6 +1,10 @@
 //! Application state and message handling.
 
+use std::time::Duration;
+
+use futures::StreamExt;
 use iced::Task;
+use melobudsnext::actions::{CommandObserver, ReconnectPolicy};
 use melobudsnext::config::Config;
 use melobudsnext::protocol::anc::{AncMode, TransparencyMode};
 use melobudsnext::protocol::commands::{self, NotificationVolume, WearDetection};
@@ -21,6 +25,7 @@ pub(crate) enum Message {
     Connect,
     Refresh,
     Disconnect,
+    Progress(String),
     Finished(ActionResult),
     SelectAnc(AncChoice),
     AncLevelChanged(u8),
@@ -102,19 +107,25 @@ impl App {
         let offline =
             cli.offline || offline_flag(std::env::var("MELOBUDNEXT_GUI_OFFLINE").ok().as_deref());
 
-        Self::build(config, config_error, offline)
+        let reconnect = ReconnectPolicy {
+            attempts: cli.reconnect_attempts,
+            delay: Duration::from_secs_f64(cli.reconnect_delay),
+        };
+
+        Self::build(config, config_error, offline, reconnect)
     }
 
     pub(crate) fn build(
         config: Config,
         config_error: Option<String>,
         offline: bool,
+        reconnect: ReconnectPolicy,
     ) -> (Self, Task<Message>) {
         let target = config.mac_address.clone();
         let address_input = target.clone().unwrap_or_default();
 
         let mut app = Self {
-            session: Session::new(config.uuids.clone(), target.clone()),
+            session: Session::with_policy(config.uuids.clone(), target.clone(), reconnect),
             connected: false,
             offline,
             busy: None,
@@ -165,7 +176,25 @@ impl App {
         self.warnings.clear();
 
         let session = self.session.clone();
-        Task::perform(async move { session.run(action).await }, Message::Finished)
+        let (sender, receiver) = futures::channel::mpsc::unbounded();
+
+        // The future sends progress and the final result into the channel; the
+        // stream below forwards both as messages, so the runtime polls them
+        // concurrently without spawning a separate task.
+        let completion = async move {
+            let progress = sender.clone();
+            let mut observer = ProgressObserver::new(move |attempt: u32, attempts: u32| {
+                let _ = progress.unbounded_send(Message::Progress(format!(
+                    "Reconectando ao fone… tentativa {attempt} de {attempts}"
+                )));
+            });
+            let result = session.run(action, &mut observer).await;
+            let _ = sender.unbounded_send(Message::Finished(result));
+        };
+
+        let finished = futures::stream::once(completion).filter_map(|()| async { None::<Message> });
+
+        Task::stream(futures::stream::select(receiver, finished))
     }
 
     /// Controls that write to the headphones are only active while online and
@@ -277,9 +306,32 @@ impl App {
     }
 }
 
+/// Forwards reconnection attempts from the session to the GUI messages.
+struct ProgressObserver<F> {
+    progress: F,
+}
+
+impl<F> ProgressObserver<F> {
+    fn new(progress: F) -> Self {
+        Self { progress }
+    }
+}
+
+impl<F: FnMut(u32, u32) + Send> CommandObserver for ProgressObserver<F> {
+    fn reconnect_attempt(&mut self, attempt: u32, attempts: u32) {
+        (self.progress)(attempt, attempts);
+    }
+}
+
 pub(crate) fn update(app: &mut App, message: Message) -> Task<Message> {
     let message = match message {
         Message::Finished(result) => return app.finish(result),
+        Message::Progress(label) => {
+            if app.busy.is_some() {
+                app.busy = Some(label);
+            }
+            return Task::none();
+        }
         message => message,
     };
 

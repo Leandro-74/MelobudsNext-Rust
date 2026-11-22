@@ -1,5 +1,6 @@
 //! Tests for the application state, update function and regressions.
 
+use melobudsnext::actions::ReconnectPolicy;
 use melobudsnext::config::Config;
 
 use crate::app::{update, App, Message, OFFLINE_NOTICE};
@@ -8,12 +9,12 @@ use crate::options::{AncChoice, Tab, TouchOption, VolumeOption};
 use crate::view::view;
 
 fn offline_app() -> App {
-    let (app, _) = App::build(Config::default(), None, true);
+    let (app, _) = App::build(Config::default(), None, true, ReconnectPolicy::default());
     app
 }
 
 fn online_app() -> App {
-    let (app, _) = App::build(Config::default(), None, false);
+    let (app, _) = App::build(Config::default(), None, false, ReconnectPolicy::default());
     app
 }
 
@@ -104,6 +105,26 @@ fn offline_mode_still_allows_local_drafts() {
 
     assert_eq!(app.tab, Tab::Audio);
     assert_eq!(app.balance, 30);
+}
+
+#[test]
+fn progress_messages_update_the_busy_label() {
+    let mut app = online_app();
+    app.busy = Some("Alterando LDAC e reconectando…".to_string());
+
+    let _ = update(
+        &mut app,
+        Message::Progress("Reconectando ao fone… tentativa 2 de 10".to_string()),
+    );
+    assert_eq!(
+        app.busy.as_deref(),
+        Some("Reconectando ao fone… tentativa 2 de 10")
+    );
+
+    // A late message after the action finished must not resurrect the label.
+    app.busy = None;
+    let _ = update(&mut app, Message::Progress("ignorar".to_string()));
+    assert!(app.busy.is_none());
 }
 
 // -----------------------------------------------------------------------
@@ -321,12 +342,13 @@ fn active_anc_mode_validates_the_draft() {
 #[test]
 fn offline_build_skips_the_automatic_connection() {
     let config = Config::default().with_mac("AA:BB:CC:DD:EE:FF");
+    let policy = ReconnectPolicy::default();
 
-    let (online, _) = App::build(config.clone(), None, false);
+    let (online, _) = App::build(config.clone(), None, false, policy);
     assert_eq!(online.busy.as_deref(), Some("Conectando ao fone…"));
     assert_eq!(online.address_input, "AA:BB:CC:DD:EE:FF");
 
-    let (offline, _) = App::build(config, None, true);
+    let (offline, _) = App::build(config, None, true, policy);
     assert!(offline.busy.is_none());
     assert_eq!(offline.address_input, "AA:BB:CC:DD:EE:FF");
 }

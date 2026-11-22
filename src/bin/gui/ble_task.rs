@@ -9,7 +9,9 @@ use std::sync::Arc;
 
 use anyhow::{anyhow, Context, Result};
 use futures::lock::Mutex;
-use melobudsnext::actions::{CommandOptions, ConnectError, Controller};
+use melobudsnext::actions::{
+    CommandObserver, CommandOptions, ConnectError, Controller, ReconnectPolicy,
+};
 use melobudsnext::config::BleUuids;
 use melobudsnext::protocol::framing::Packet;
 use melobudsnext::protocol::touch::TouchMapping;
@@ -55,20 +57,36 @@ pub struct ActionResult {
 #[derive(Clone)]
 pub struct Session {
     inner: Arc<Mutex<Controller>>,
+    reconnect: ReconnectPolicy,
 }
 
 impl Session {
-    pub fn new(uuids: BleUuids, target: Option<String>) -> Self {
+    /// Builds a session that uses `reconnect` for commands that restart the
+    /// headphones, such as LDAC.
+    pub fn with_policy(
+        uuids: BleUuids,
+        target: Option<String>,
+        reconnect: ReconnectPolicy,
+    ) -> Self {
         Self {
             inner: Arc::new(Mutex::new(Controller::new(uuids, target))),
+            reconnect,
         }
     }
 
-    pub async fn run(&self, action: Action) -> ActionResult {
+    pub async fn run(&self, action: Action, observer: &mut dyn CommandObserver) -> ActionResult {
         let mut controller = self.inner.lock().await;
         let mut result = ActionResult::default();
 
-        if let Err(error) = execute(&mut controller, action, &mut result).await {
+        if let Err(error) = execute(
+            &mut controller,
+            action,
+            &mut result,
+            self.reconnect,
+            observer,
+        )
+        .await
+        {
             result.error = Some(format!("{error:#}"));
             controller.drop_client_if_link_lost().await;
         }
@@ -85,6 +103,8 @@ async fn execute(
     controller: &mut Controller,
     action: Action,
     result: &mut ActionResult,
+    policy: ReconnectPolicy,
+    observer: &mut dyn CommandObserver,
 ) -> Result<()> {
     match action {
         Action::Connect { address } => {
@@ -120,9 +140,8 @@ async fn execute(
             label,
         } => {
             require_connected(controller)?;
-            let outcome = controller
-                .command(&packet, &CommandOptions::gui(reconnect))
-                .await?;
+            let options = CommandOptions::gui(reconnect).with_reconnect_policy(policy);
+            let outcome = controller.command_with(&packet, &options, observer).await?;
             result.warnings.extend(outcome.warnings);
             if reconnect || refresh_drafts {
                 result.refresh_drafts = true;

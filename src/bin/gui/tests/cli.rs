@@ -4,6 +4,7 @@ use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use clap::Parser;
+use melobudsnext::actions::{RECONNECT_ATTEMPTS, RECONNECT_DELAY};
 use melobudsnext::config::Config;
 
 use crate::cli::{load_configuration, offline_flag, Cli};
@@ -125,13 +126,50 @@ fn treats_explicit_truthy_values_as_offline() {
 }
 
 #[test]
+fn parses_the_reconnect_policy_flags() {
+    let cli = Cli::try_parse_from([
+        "melobudsnext-gui",
+        "--reconnect-attempts",
+        "3",
+        "--reconnect-delay",
+        "0.5",
+    ])
+    .unwrap();
+
+    assert_eq!(cli.reconnect_attempts, 3);
+    assert!((cli.reconnect_delay - 0.5).abs() < f64::EPSILON);
+}
+
+#[test]
+fn uses_the_default_reconnect_policy() {
+    let cli = Cli::try_parse_from(["melobudsnext-gui"]).unwrap();
+
+    assert_eq!(cli.reconnect_attempts, RECONNECT_ATTEMPTS);
+    assert!((cli.reconnect_delay - RECONNECT_DELAY.as_secs_f64()).abs() < f64::EPSILON);
+}
+
+#[test]
+fn rejects_invalid_reconnect_policy_flags() {
+    assert!(Cli::try_parse_from(["melobudsnext-gui", "--reconnect-attempts", "0"]).is_err());
+    assert!(Cli::try_parse_from(["melobudsnext-gui", "--reconnect-attempts", "many"]).is_err());
+    assert!(Cli::try_parse_from(["melobudsnext-gui", "--reconnect-delay", "-1"]).is_err());
+    assert!(Cli::try_parse_from(["melobudsnext-gui", "--reconnect-delay", "61"]).is_err());
+    assert!(Cli::try_parse_from(["melobudsnext-gui", "--reconnect-delay", "soon"]).is_err());
+}
+
+#[test]
 fn cor_10_help_and_version_cover_the_gui_flags() {
     use clap::CommandFactory;
 
     let mut command = Cli::command();
     let help = command.render_help().to_string();
 
-    for flag in ["--offline", "--config"] {
+    for flag in [
+        "--offline",
+        "--config",
+        "--reconnect-attempts",
+        "--reconnect-delay",
+    ] {
         assert!(help.contains(flag), "help was: {help}");
     }
 

@@ -4,9 +4,12 @@ use std::time::Duration;
 use anyhow::{anyhow, Context, Result};
 use clap::{Args, Parser, Subcommand, ValueEnum};
 
-use melobudsnext::actions::{CommandObserver, CommandOptions, ConnectError, Controller};
+use melobudsnext::actions::{
+    CommandObserver, CommandOptions, ConnectError, Controller, ReconnectPolicy, RECONNECT_ATTEMPTS,
+    RECONNECT_DELAY,
+};
 use melobudsnext::ble::{self, BleSession};
-use melobudsnext::cli::{build_anc_mode, mapping_from_bindings, wait_duration};
+use melobudsnext::cli::{build_anc_mode, mapping_from_bindings, reconnect_policy, wait_duration};
 use melobudsnext::config::Config;
 use melobudsnext::hex;
 use melobudsnext::protocol::anc::AncScene;
@@ -329,6 +332,14 @@ enum DeviceCommand {
         #[arg(value_enum)]
         state: OnOff,
 
+        /// Reconnection attempts after the LDAC restart.
+        #[arg(long, default_value_t = RECONNECT_ATTEMPTS)]
+        reconnect_attempts: u32,
+
+        /// Seconds between reconnection attempts.
+        #[arg(long, default_value_t = RECONNECT_DELAY.as_secs_f64())]
+        reconnect_delay: f64,
+
         #[command(flatten)]
         action: ActionArgs,
     },
@@ -546,7 +557,7 @@ async fn run_device(
             run_action(
                 commands::anc(mode),
                 &args.action,
-                false,
+                None,
                 address,
                 config_path,
                 scan_timeout,
@@ -557,7 +568,7 @@ async fn run_device(
             run_action(
                 commands::game_mode(state.enabled()),
                 &action,
-                false,
+                None,
                 address,
                 config_path,
                 scan_timeout,
@@ -568,18 +579,24 @@ async fn run_device(
             run_action(
                 commands::sleep_mode(state.enabled()),
                 &action,
-                false,
+                None,
                 address,
                 config_path,
                 scan_timeout,
             )
             .await
         }
-        DeviceCommand::Ldac { state, action } => {
+        DeviceCommand::Ldac {
+            state,
+            reconnect_attempts,
+            reconnect_delay,
+            action,
+        } => {
+            let policy = reconnect_policy(reconnect_attempts, reconnect_delay)?;
             run_action(
                 commands::ldac(state.enabled()),
                 &action,
-                true,
+                Some(policy),
                 address,
                 config_path,
                 scan_timeout,
@@ -590,7 +607,7 @@ async fn run_device(
             run_action(
                 commands::rename(&name)?,
                 &action,
-                false,
+                None,
                 address,
                 config_path,
                 scan_timeout,
@@ -601,7 +618,7 @@ async fn run_device(
             run_action(
                 commands::channel_balance(value),
                 &action,
-                false,
+                None,
                 address,
                 config_path,
                 scan_timeout,
@@ -612,7 +629,7 @@ async fn run_device(
             run_action(
                 commands::notification_volume(level.into()),
                 &action,
-                false,
+                None,
                 address,
                 config_path,
                 scan_timeout,
@@ -634,7 +651,7 @@ async fn run_device(
                     tone,
                 }),
                 &action,
-                false,
+                None,
                 address,
                 config_path,
                 scan_timeout,
@@ -646,7 +663,7 @@ async fn run_device(
             run_action(
                 commands::query(opcode),
                 &action,
-                false,
+                None,
                 address,
                 config_path,
                 scan_timeout,
@@ -676,6 +693,15 @@ impl CommandObserver for CliObserver {
             println!("Reconnecting: the headphones restart when LDAC changes...");
         }
     }
+
+    fn reconnect_attempt(&mut self, attempt: u32, attempts: u32) {
+        let message = format!("Reconnect attempt {attempt}/{attempts}...");
+        if self.json {
+            eprintln!("{message}");
+        } else {
+            println!("{message}");
+        }
+    }
 }
 
 /// Runs a command, applies its echoes to the live state and prints the result.
@@ -685,7 +711,7 @@ impl CommandObserver for CliObserver {
 async fn run_action(
     packet: Packet,
     action: &ActionArgs,
-    reconnect: bool,
+    reconnect: Option<ReconnectPolicy>,
     address: Option<&str>,
     config_path: &Path,
     scan_timeout: Duration,
@@ -722,12 +748,10 @@ async fn run_action(
     }
 
     let mut observer = CliObserver { json: action.json };
+    let options = CommandOptions::cli(wait, reconnect.is_some())
+        .with_reconnect_policy(reconnect.unwrap_or_default());
     let outcome = controller
-        .command_with(
-            &packet,
-            &CommandOptions::cli(wait, reconnect),
-            &mut observer,
-        )
+        .command_with(&packet, &options, &mut observer)
         .await?;
 
     if outcome.reconnected {

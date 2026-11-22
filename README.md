@@ -74,7 +74,7 @@ pelo sync automático de um comando LDAC).
 | `device anc` | Desliga ANC/transparência |
 | `device game on` | Liga o modo jogo |
 | `device sleep on` | Liga o modo sono |
-| `device ldac on` | Liga LDAC e reconecta (o fone reinicia) |
+| `device ldac on` | Liga LDAC e reconecta (o fone reinicia); `--reconnect-attempts` e `--reconnect-delay` ajustam a espera |
 | `device rename "Meu Fone"` | Renomeia (até 32 bytes UTF-8) |
 | `device balance 40` | Balanço 0 (esquerda) a 100 (direita) |
 | `device volume medium` | Volume de notificação (`low`, `medium`, `high`, `max`) |
@@ -130,13 +130,13 @@ gravar capturas), use:
 cargo run --bin melobudsnext-gui -- --offline
 ```
 
-`melobudsnext-gui --help` lista as flags disponíveis (`--offline` e
-`--config PATH`) e `--version` imprime a versão do pacote. O mesmo modo offline
-pode ser ativado com `MELOBUDNEXT_GUI_OFFLINE=1` (valores como `true`, `yes` e
-`on` também ligam; `0`, `false`, `no`, `off` e vazio desligam). Nesse modo o
-botão de conexão e todos os controles que gravam no fone ficam desabilitados; os
-rascunhos locais (abas, sliders e seletores) continuam respondendo e o rodapé
-mostra um aviso.
+`melobudsnext-gui --help` lista as flags disponíveis (`--offline`,
+`--config PATH`, `--reconnect-attempts` e `--reconnect-delay`) e `--version`
+imprime a versão do pacote. O mesmo modo offline pode ser ativado com
+`MELOBUDNEXT_GUI_OFFLINE=1` (valores como `true`, `yes` e `on` também ligam; `0`,
+`false`, `no`, `off` e vazio desligam). Nesse modo o botão de conexão e todos os
+controles que gravam no fone ficam desabilitados; os rascunhos locais (abas,
+sliders e seletores) continuam respondendo e o rodapé mostra um aviso.
 
 A janela tem tamanho fixo de 1200x800 (layout de dashboard) e usa o renderer
 **tiny-skia** (CPU). O wgpu não foi usado porque, neste ambiente, ele abria uma
@@ -219,8 +219,12 @@ Python, faça uma cópia antes, porque ele espera a chave `address`.
   atrasadas; se algum não responder, espera a janela completa (`--wait`).
 - A subscrição de notificações é aberta uma vez por sessão e reutilizada por
   todas as ações; ela só é refeita quando a conexão é restabelecida.
-- Depois de mudar LDAC, a conexão é refeita automaticamente (10 tentativas, 3 s
-  entre elas), como no cliente Python.
+- Depois de mudar LDAC, a conexão é refeita automaticamente, como no cliente
+  Python: por padrão são 10 tentativas com 3 s entre elas. Durante a espera, o
+  CLI imprime `Reconnect attempt N/10...` (ou em `stderr` com `--json`) e a GUI
+  atualiza o cabeçalho com a tentativa atual. Use `--reconnect-attempts` e
+  `--reconnect-delay` no CLI (ou na GUI) para ajustar a quantidade e o intervalo;
+  `--reconnect-delay 0` remove a pausa entre as tentativas.
 - Na GUI, cada ação verifica o link ao terminar. Se o fone foi desligado, a
   sessão é descartada, a interface volta para "Desconectado" e o erro aparece no
   rodapé em vez de manter um estado antigo.
