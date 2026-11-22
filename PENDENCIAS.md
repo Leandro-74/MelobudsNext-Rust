@@ -798,7 +798,7 @@ documentação.
 | 2 | `refactor/controlador-transporte` | 1 | 4 | Implementado (0764928, 2026-11-22) |
 | 3 | `perf/sincronizacao-notificacoes` | 2 | 4 | Implementado (28963cd, 2026-11-22) |
 | 4 | `refactor/gui-modulos` | 1 | 3 | Implementado (0e73c22, 2026-11-22) |
-| 5 | `feat/gui-tempo-real` | 2, 3, 4 | 2 | Pendente |
+| 5 | `feat/gui-tempo-real` | 2, 3, 4 | 2 | Implementado (871a1bf, 2026-11-22) |
 | 6 | `feat/protocolo-hardware` | 0, 2 | 6 | Pendente |
 | 7 | `chore/docs-release` | todos | 4 | Pendente |
 
@@ -1059,6 +1059,50 @@ Cada sessão adiciona aqui a subseção do lote concluído, antes do merge.
     `Transport`/`Controller` do Lote 3 e os módulos `app`/`tabs` criados aqui;
     ao adicionar mensagens de estado ao vivo, siga o padrão de `Task::stream`
     para não bloquear `update` nem exigir runtime nos testes.
+
+#### Lote 5 — Estado em tempo real na GUI
+
+- **Status:** Implementado
+- **Branch:** `feat/gui-tempo-real`
+- **Commits:** `9067776` (IMP-01), `871a1bf` (ajuste da leitura periódica),
+  `2e7215d` (DOC-05)
+- **Validação:** gate completo na branch e na `main` (`cargo fmt --check`,
+  `cargo clippy --all-targets -- -D warnings`, `cargo test --all-targets` com
+  127 testes da lib + 34 da GUI + 6 de integração, `cargo build --release`).
+  Hardware: Arch Linux/KDE Wayland, firmware 2.0.6. GUI conectada ao fone real
+  via configuração existente; outro processo (CLI) alterou o ANC de
+  `noise/level-3` para `indoor/level-1` e a GUI passou a exibir o novo valor sem
+  clicar em **Atualizar**. O mapa de toque foi alterado externamente
+  (`right-triple` de `next` para `previous`) e a GUI o releu pelo ciclo ocioso
+  sem ação do usuário; ANC e toque foram restaurados ao final. Não foi possível
+  executar o gesto físico nem usar o app oficial nesta sessão; a mudança externa
+  foi feita por outro cliente no mesmo adaptador.
+- **Notas:**
+  - IMP-01 adicionou `Transport::wait_notification`/`read_touch` e, no
+    controlador, `poll_notifications`/`refresh_touch`. A GUI consome a stream
+    persistente do Lote 3 em um laço `Task::stream` com espera limitada
+    (`LIVE_WAIT` de 250 ms), no mesmo padrão do progresso do Lote 4: não há
+    `tokio::spawn`, então os testes continuam rodando fora de um runtime.
+  - A notificação é aplicada ao estado da sessão e enviada à UI como
+    `Message::Live`; o `update` é ignorado enquanto uma ação está em andamento
+    para não competir com o resultado autoritativo do controlador.
+  - Só os rascunhos dos campos que mudaram são recarregados (ANC, toque, balanço,
+    volume, uso e nome). Assim uma mudança externa de ANC não descarta um ajuste
+    de balanço ou de toque ainda não aplicado.
+  - O mapa de toque não gera notificação na characteristic de comando. Por isso
+    ele é relido a cada 12 ciclos ociosos (≈3 s); os demais campos chegam por
+    notificação.
+  - Armadilha: durante a validação, um segundo cliente no mesmo adaptador
+    derrubou o link da GUI ao terminar. A leitura periódica de toque falhou com
+    `Not connected` e a GUI voltou para "Desconectado", como esperado; um ajuste
+    posterior passou a ocultar falhas transitórias dessa leitura quando a sonda
+    confirma que o link continua vivo.
+  - Dívidas: a releitura periódica de toque adiciona tráfego BLE a cada ~3 s na
+    GUI ociosa; bateria e firmware continuam atualizando só ao conectar ou em
+    **Atualizar**; `0x28` e `0x2F`/`0x30` seguem sem decodificação (Lote 6).
+  - Recomendação para o Lote 6: usar a escuta ao vivo para capturar `0x28` e os
+    opcodes desconhecidos com o app oficial, registrar firmware e plataforma, e
+    evitar manter dois clientes conectados ao mesmo fone durante a captura.
 
 ## Checklist de release (após o Lote 7)
 
