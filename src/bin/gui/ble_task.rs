@@ -169,24 +169,6 @@ fn background_error(error: String, connected: bool) -> Option<String> {
     (!connected).then_some(error)
 }
 
-#[cfg(test)]
-mod tests {
-    use super::background_error;
-
-    #[test]
-    fn transient_background_errors_are_ignored_while_the_link_lives() {
-        assert_eq!(background_error("not connected".to_string(), true), None);
-    }
-
-    #[test]
-    fn background_errors_survive_a_lost_link() {
-        assert_eq!(
-            background_error("not connected".to_string(), false).as_deref(),
-            Some("not connected")
-        );
-    }
-}
-
 async fn execute(
     controller: &mut Controller,
     action: Action,
@@ -269,5 +251,23 @@ async fn connect(controller: &mut Controller, target: &str) -> Result<Vec<String
         Err(ConnectError::Sync(error)) => {
             Err(error).context("conectou, mas não foi possível sincronizar o estado")
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::background_error;
+
+    #[test]
+    fn transient_background_errors_are_ignored_while_the_link_lives() {
+        assert_eq!(background_error("not connected".to_string(), true), None);
+    }
+
+    #[test]
+    fn background_errors_survive_a_lost_link() {
+        assert_eq!(
+            background_error("not connected".to_string(), false).as_deref(),
+            Some("not connected")
+        );
     }
 }
