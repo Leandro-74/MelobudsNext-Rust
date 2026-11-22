@@ -116,7 +116,9 @@ Se houver um `mac_address` na configuração, a GUI tenta conectar sozinha ao
 abrir. O cabeçalho permite conectar, atualizar e desconectar; as abas cobrem
 status, ANC, áudio (LDAC, modo jogo/sono, balanço), toque e detecção de uso.
 LDAC e os modos jogo/sono são enviados na hora; ANC, sliders, mapa de toque e
-nome usam um rascunho local e o botão **Aplicar**.
+nome usam um rascunho local e o botão **Aplicar**. Depois de um comando
+bem-sucedido, o valor escolhido permanece na interface mesmo quando o firmware
+não devolve o eco dentro da janela de escuta.
 
 Para abrir a interface sem acessar o Bluetooth (útil para conferir o layout ou
 gravar capturas), use:
@@ -125,9 +127,13 @@ gravar capturas), use:
 cargo run --bin melobudsnext-gui -- --offline
 ```
 
-O mesmo modo pode ser ativado com `MELOBUDNEXT_GUI_OFFLINE=1` (valores como
-`true`, `yes` e `on` também ligam; `0`, `false`, `no`, `off` e vazio desligam).
-Nele o botão de conexão fica desabilitado e o rodapé mostra um aviso.
+`melobudsnext-gui --help` lista as flags disponíveis (`--offline` e
+`--config PATH`) e `--version` imprime a versão do pacote. O mesmo modo offline
+pode ser ativado com `MELOBUDNEXT_GUI_OFFLINE=1` (valores como `true`, `yes` e
+`on` também ligam; `0`, `false`, `no`, `off` e vazio desligam). Nesse modo o
+botão de conexão e todos os controles que gravam no fone ficam desabilitados; os
+rascunhos locais (abas, sliders e seletores) continuam respondendo e o rodapé
+mostra um aviso.
 
 A janela tem tamanho fixo de 1200x800 (layout de dashboard) e usa o renderer
 **tiny-skia** (CPU). O wgpu não foi usado porque, neste ambiente, ele abria uma
@@ -159,9 +165,11 @@ cargo run -- touch decode "01 01 02 03 03 00 04 00 05 00 06 00 07 00 08 00 00 00
 ## Configuração
 
 O caminho padrão é `~/.melobudsnext/config.json` (ou `%USERPROFILE%\.melobudsnext\config.json`).
-Use `--config PATH` para apontar para outro arquivo. Se `HOME`/`USERPROFILE`
-não estiver definido, o CLI retorna um erro em vez de gravar no diretório
-atual; nesse caso informe `--config PATH`.
+Use `--config PATH` no CLI ou na GUI para apontar para outro arquivo. Se
+`HOME`/`USERPROFILE` não estiver definido, o CLI retorna um erro em vez de gravar
+no diretório atual; nesse caso informe `--config PATH`. A GUI também aceita
+`--config PATH` e avisa no rodapé quando o arquivo pedido não pode ser lido,
+seguindo com os valores padrão.
 
 ```json
 {
@@ -194,14 +202,21 @@ Python, faça uma cópia antes, porque ele espera a chave `address`.
 
 ## Comportamento e diferenças em relação ao Python
 
-- Decodificação tolerante: ANC desconhecido é preservado como `unknown(...)`,
-  bateria de 2 bytes é aceita e o touch aceita qualquer quantidade par de bytes.
+- Decodificação tolerante: ANC desconhecido é preservado como `unknown(...)`; na
+  GUI ele aparece como "Desconhecido" e o botão **Aplicar ANC** fica
+  desabilitado até que um modo conhecido seja escolhido, em vez de reenviar
+  "desligado". Bateria de 2 bytes é aceita e o touch aceita qualquer quantidade
+  par de bytes; funções de toque desconhecidas aparecem como
+  `Desconhecida (0xXX)` no seletor e são preservadas ao salvar.
 - `rename` vazio não apaga o nome atual.
 - O `sync` não aborta por causa de uma leitura opcional; falhas viram avisos.
 - As consultas `0xFE` são enviadas a cada 50 ms enquanto as notificações são
   lidas, evitando perder respostas.
 - Depois de mudar LDAC, a conexão é refeita automaticamente (10 tentativas, 3 s
   entre elas), como no cliente Python.
+- Na GUI, cada ação verifica o link ao terminar. Se o fone foi desligado, a
+  sessão é descartada, a interface volta para "Desconectado" e o erro aparece no
+  rodapé em vez de manter um estado antigo.
 - Saída `--json` é JSON puro em `stdout`.
 - Não há TUI; os comandos do CLI são de uma execução só, com `device monitor`
   para acompanhar notificações. A interface gráfica é um binário separado

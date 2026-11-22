@@ -9,8 +9,10 @@
 mod ble_task;
 
 use std::fmt;
+use std::path::PathBuf;
 
 use ble_task::{Action, ActionResult, Session};
+use clap::Parser;
 use melobudsnext::config::Config;
 use melobudsnext::protocol::anc::{AncMode, AncScene, TransparencyMode};
 use melobudsnext::protocol::commands::{self, NotificationVolume, WearDetection};
@@ -48,6 +50,8 @@ const VIOLET: Color = Color::from_rgb(0.604, 0.549, 1.0);
 const AMBER: Color = Color::from_rgb(1.0, 0.784, 0.341);
 const DANGER: Color = Color::from_rgb(1.0, 0.478, 0.478);
 
+const OFFLINE_NOTICE: &str = "Modo offline: as ações do fone estão desativadas para demonstração.";
+
 fn bold() -> Font {
     Font {
         weight: iced::font::Weight::Bold,
@@ -60,6 +64,27 @@ fn medium() -> Font {
         weight: iced::font::Weight::Medium,
         ..Font::DEFAULT
     }
+}
+
+// ---------------------------------------------------------------------------
+// Command line
+// ---------------------------------------------------------------------------
+
+/// Options accepted by the graphical interface.
+#[derive(Debug, Parser)]
+#[command(
+    name = "melobudsnext-gui",
+    version,
+    about = "Painel gráfico para o QCY Melobuds Pro"
+)]
+struct Cli {
+    /// Caminho do arquivo de configuração (padrão: ~/.melobudsnext/config.json).
+    #[arg(long, value_name = "PATH")]
+    config: Option<PathBuf>,
+
+    /// Abre a interface sem acessar o Bluetooth (demonstração e capturas).
+    #[arg(long)]
+    offline: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -110,6 +135,9 @@ enum AncChoice {
     Off,
     Scene(AncScene),
     Transparency,
+    /// Triple reported by the firmware that the interface cannot represent.
+    /// Kept as its own choice so it is never silently converted into "off".
+    Unknown([u8; 3]),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -157,25 +185,38 @@ impl TouchOption {
         Self(TouchFunction::HoldCall),
         Self(TouchFunction::AncMode),
     ];
+
+    /// Options shown by the selector for the value currently stored.
+    ///
+    /// A function reported by the firmware that this interface does not know is
+    /// appended to the list so the stored value is visible instead of leaving
+    /// the selector blank. Choosing it writes the same byte back.
+    fn options(current: TouchFunction) -> Vec<Self> {
+        let mut options = Self::ALL.to_vec();
+        if let TouchFunction::Unknown(value) = current {
+            options.push(Self(TouchFunction::Unknown(value)));
+        }
+        options
+    }
 }
 
 impl fmt::Display for TouchOption {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(match self.0 {
-            TouchFunction::None => "Nenhuma",
-            TouchFunction::PlayPause => "Reproduzir / pausar",
-            TouchFunction::Previous => "Faixa anterior",
-            TouchFunction::Next => "Próxima faixa",
-            TouchFunction::VoiceAssistant => "Assistente de voz",
-            TouchFunction::VolumeUp => "Aumentar volume",
-            TouchFunction::VolumeDown => "Diminuir volume",
-            TouchFunction::ToggleGameMode => "Alternar modo jogo",
-            TouchFunction::AnswerCall => "Atender chamada",
-            TouchFunction::RejectCall => "Rejeitar chamada",
-            TouchFunction::HoldCall => "Segurar chamada",
-            TouchFunction::AncMode => "Alternar ANC",
-            TouchFunction::Unknown(_) => "Desconhecida",
-        })
+        match self.0 {
+            TouchFunction::None => formatter.write_str("Nenhuma"),
+            TouchFunction::PlayPause => formatter.write_str("Reproduzir / pausar"),
+            TouchFunction::Previous => formatter.write_str("Faixa anterior"),
+            TouchFunction::Next => formatter.write_str("Próxima faixa"),
+            TouchFunction::VoiceAssistant => formatter.write_str("Assistente de voz"),
+            TouchFunction::VolumeUp => formatter.write_str("Aumentar volume"),
+            TouchFunction::VolumeDown => formatter.write_str("Diminuir volume"),
+            TouchFunction::ToggleGameMode => formatter.write_str("Alternar modo jogo"),
+            TouchFunction::AnswerCall => formatter.write_str("Atender chamada"),
+            TouchFunction::RejectCall => formatter.write_str("Rejeitar chamada"),
+            TouchFunction::HoldCall => formatter.write_str("Segurar chamada"),
+            TouchFunction::AncMode => formatter.write_str("Alternar ANC"),
+            TouchFunction::Unknown(value) => write!(formatter, "Desconhecida (0x{value:02X})"),
+        }
     }
 }
 
@@ -210,6 +251,27 @@ enum Message {
     ApplyRename,
 }
 
+impl Message {
+    /// Whether the message would trigger a BLE write or link change.
+    fn is_device_action(&self) -> bool {
+        matches!(
+            self,
+            Self::Connect
+                | Self::Refresh
+                | Self::Disconnect
+                | Self::ApplyAnc
+                | Self::ToggleGame(_)
+                | Self::ToggleSleep(_)
+                | Self::ToggleLdac(_)
+                | Self::ApplyBalance
+                | Self::VolumeSelected(_)
+                | Self::ApplyTouch
+                | Self::ApplyWear
+                | Self::ApplyRename
+        )
+    }
+}
+
 struct App {
     session: Session,
     connected: bool,
@@ -240,19 +302,18 @@ struct App {
 }
 
 impl App {
-    fn new() -> (Self, Task<Message>) {
-        let (config, config_error) = match Config::load() {
-            Ok(config) => (config, None),
-            Err(error) => (
-                Config::default(),
-                Some(format!("não foi possível ler a configuração: {error}")),
-            ),
-        };
+    fn new(cli: Cli) -> (Self, Task<Message>) {
+        let (config, config_error) = load_configuration(&cli);
 
+        let offline =
+            cli.offline || offline_flag(std::env::var("MELOBUDNEXT_GUI_OFFLINE").ok().as_deref());
+
+        Self::build(config, config_error, offline)
+    }
+
+    fn build(config: Config, config_error: Option<String>, offline: bool) -> (Self, Task<Message>) {
         let target = config.mac_address.clone();
         let address_input = target.clone().unwrap_or_default();
-        let offline = std::env::args().any(|argument| argument == "--offline")
-            || offline_flag(std::env::var("MELOBUDNEXT_GUI_OFFLINE").ok().as_deref());
 
         let mut app = Self {
             session: Session::new(config.uuids.clone(), target.clone()),
@@ -263,7 +324,7 @@ impl App {
             state: DeviceState::default(),
             tab: Tab::Status,
             notice: if offline {
-                Some("Modo offline: conexões BLE desativadas para demonstração.".to_string())
+                Some(OFFLINE_NOTICE.to_string())
             } else {
                 None
             },
@@ -294,7 +355,9 @@ impl App {
     }
 
     fn dispatch(&mut self, label: impl Into<String>, action: Action) -> Task<Message> {
-        if self.busy.is_some() {
+        // Defense in depth: the update handler already rejects device actions
+        // in offline mode, so a write can never reach the session here.
+        if self.offline || self.busy.is_some() {
             return Task::none();
         }
 
@@ -305,6 +368,12 @@ impl App {
 
         let session = self.session.clone();
         Task::perform(async move { session.run(action).await }, Message::Finished)
+    }
+
+    /// Controls that write to the headphones are only active while online and
+    /// no other action is running.
+    fn controls_enabled(&self) -> bool {
+        !self.offline && self.busy.is_none()
     }
 
     fn finish(&mut self, result: ActionResult) -> Task<Message> {
@@ -334,9 +403,10 @@ impl App {
 
     fn load_drafts(&mut self) {
         self.anc_choice = match self.state.anc {
-            AncMode::Off | AncMode::Unknown(_) => AncChoice::Off,
+            AncMode::Off => AncChoice::Off,
             AncMode::Anc { scene, .. } => AncChoice::Scene(scene),
             AncMode::Transparency { .. } => AncChoice::Transparency,
+            AncMode::Unknown(payload) => AncChoice::Unknown(payload),
         };
 
         if let AncMode::Anc {
@@ -393,6 +463,10 @@ impl App {
                 };
                 AncMode::transparency(mode).map_err(|error| error.to_string())
             }
+            AncChoice::Unknown(payload) => Err(format!(
+                "O ANC reportado pelo fone é desconhecido ({}); escolha um modo antes de aplicar.",
+                unknown_anc_label(payload)
+            )),
         }
     }
 
@@ -423,13 +497,17 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
         return Task::none();
     }
 
+    // Offline mode is for layout previews and screenshots: local drafts still
+    // react, but every device action is rejected before it can fail with a
+    // "not connected" error.
+    if app.offline && message.is_device_action() {
+        app.error = None;
+        app.notice = Some(OFFLINE_NOTICE.to_string());
+        return Task::none();
+    }
+
     match message {
         Message::Connect => {
-            if app.offline {
-                app.notice =
-                    Some("Modo offline: conexões BLE desativadas para demonstração.".to_string());
-                return Task::none();
-            }
             let address = app.address_input.trim().to_string();
             if address.is_empty() {
                 app.error = Some("Informe o MAC ou o ID do fone para conectar.".to_string());
@@ -697,18 +775,18 @@ fn header(app: &App) -> Element<'_, Message> {
         controls = controls.push(secondary_button(
             "Atualizar",
             Message::Refresh,
-            app.busy.is_none(),
+            app.controls_enabled(),
         ));
         controls = controls.push(danger_button(
             "Desconectar",
             Message::Disconnect,
-            app.busy.is_none(),
+            app.controls_enabled(),
         ));
     } else {
         controls = controls.push(primary_button(
             "Conectar",
             Message::Connect,
-            app.busy.is_none() && !app.offline && !app.address_input.trim().is_empty(),
+            app.controls_enabled() && !app.address_input.trim().is_empty(),
         ));
     }
 
@@ -1034,7 +1112,7 @@ fn status_tab(app: &App) -> Element<'_, Message> {
                         .size(13)
                         .width(Length::Fill)
                         .style(input_style),
-                    primary_button("Aplicar", Message::ApplyRename, app.busy.is_none()),
+                    primary_button("Aplicar", Message::ApplyRename, app.controls_enabled()),
                 ]
                 .spacing(8)
                 .align_y(Alignment::Center),
@@ -1132,6 +1210,18 @@ fn anc_tab(app: &App) -> Element<'_, Message> {
 
             column
         }
+        AncChoice::Unknown(payload) => column![
+            text("O fone reporta um modo de cancelamento que esta interface não conhece; nada será reenviado como desligado.")
+                .size(11)
+                .color(DANGER),
+            text(format!("Valor reportado: {}", unknown_anc_label(payload)))
+                .size(11)
+                .color(MUTED),
+            text("Escolha um modo acima para enviar uma configuração.")
+                .size(10)
+                .color(MUTED),
+        ]
+        .spacing(6),
     };
 
     modes = modes.push(details);
@@ -1155,7 +1245,11 @@ fn anc_tab(app: &App) -> Element<'_, Message> {
             .align_y(Alignment::Center),
         ),
         row![
-            primary_button("Aplicar ANC", Message::ApplyAnc, app.busy.is_none()),
+            primary_button(
+                "Aplicar ANC",
+                Message::ApplyAnc,
+                app.controls_enabled() && !matches!(app.anc_choice, AncChoice::Unknown(_)),
+            ),
             text("A alteração é imediata e pode ser sentida nos fones.")
                 .size(10)
                 .color(MUTED),
@@ -1177,21 +1271,21 @@ fn audio_tab(app: &App) -> Element<'_, Message> {
                     "LDAC",
                     "Áudio de alta resolução. Alternar reinicia a conexão BLE.",
                     app.state.ldac,
-                    app.busy.is_none(),
+                    app.controls_enabled(),
                     Message::ToggleLdac,
                 ),
                 toggle_row(
                     "Modo jogo",
                     "Reduz a latência para jogos e vídeos.",
                     app.state.game_mode,
-                    app.busy.is_none(),
+                    app.controls_enabled(),
                     Message::ToggleGame,
                 ),
                 toggle_row(
                     "Modo sono",
                     "Perfil de áudio suave para dormir.",
                     app.state.sleep_mode,
-                    app.busy.is_none(),
+                    app.controls_enabled(),
                     Message::ToggleSleep,
                 ),
             ]
@@ -1214,7 +1308,11 @@ fn audio_tab(app: &App) -> Element<'_, Message> {
                     horizontal_space(),
                     text("DIREITO").size(9).font(bold()).color(MUTED),
                 ],
-                primary_button("Aplicar balanço", Message::ApplyBalance, app.busy.is_none()),
+                primary_button(
+                    "Aplicar balanço",
+                    Message::ApplyBalance,
+                    app.controls_enabled()
+                ),
             ]
             .spacing(10),
         ),
@@ -1242,10 +1340,8 @@ fn touch_tab(app: &App) -> Element<'_, Message> {
         let mut rows = column![].spacing(9);
         for (index, key) in keys.into_iter().enumerate() {
             let current = app.touch_draft.get(key);
-            let selected = TouchOption::ALL
-                .iter()
-                .copied()
-                .find(|option| option.0 == current);
+            let options = TouchOption::options(current);
+            let selected = options.iter().copied().find(|option| option.0 == current);
             rows = rows.push(
                 row![
                     text(format!(
@@ -1256,7 +1352,7 @@ fn touch_tab(app: &App) -> Element<'_, Message> {
                     .size(11)
                     .color(MUTED)
                     .width(Length::Fixed(66.0)),
-                    pick_list(TouchOption::ALL.to_vec(), selected, move |option| {
+                    pick_list(options, selected, move |option| {
                         Message::TouchChanged(key, option)
                     })
                     .padding([8, 10])
@@ -1307,12 +1403,12 @@ fn touch_tab(app: &App) -> Element<'_, Message> {
             primary_button(
                 "Aplicar mapa de toque",
                 Message::ApplyTouch,
-                app.busy.is_none()
+                app.controls_enabled()
             ),
             secondary_button(
                 "Descartar alterações",
                 Message::ResetTouch,
-                app.busy.is_none()
+                app.controls_enabled()
             ),
             text("O mapa é gravado direto na characteristic 0000000D.")
                 .size(10)
@@ -1357,7 +1453,7 @@ fn wear_tab(app: &App) -> Element<'_, Message> {
                     number_field("Tom", &app.wear_tone, Message::WearToneChanged),
                 ]
                 .spacing(10),
-                primary_button("Aplicar configuração", Message::ApplyWear, app.busy.is_none()),
+                primary_button("Aplicar configuração", Message::ApplyWear, app.controls_enabled()),
             ]
             .spacing(10),
         ),
@@ -1743,6 +1839,11 @@ fn anc_label(mode: AncMode) -> String {
         } => format!("Transparência · {intensity}"),
         AncMode::Unknown(bytes) => format!("Desconhecido ({bytes:02X?})"),
     }
+}
+
+/// Formats the raw ANC triple reported by the firmware, e.g. `01 09 00`.
+fn unknown_anc_label(payload: [u8; 3]) -> String {
+    format!("{:02X} {:02X} {:02X}", payload[0], payload[1], payload[2])
 }
 
 fn anc_badge_label(mode: AncMode) -> String {
@@ -2146,6 +2247,24 @@ fn scrollable_style(_theme: &Theme, _status: scrollable::Status) -> scrollable::
 // Entry point
 // ---------------------------------------------------------------------------
 
+/// Loads the configuration from `--config PATH`, or from the default path when
+/// the flag is absent. Errors are reported in the UI and fall back to defaults,
+/// matching the behavior of the previous `Config::load` call.
+fn load_configuration(cli: &Cli) -> (Config, Option<String>) {
+    let result = match &cli.config {
+        Some(path) => Config::load_from(path),
+        None => Config::load(),
+    };
+
+    match result {
+        Ok(config) => (config, None),
+        Err(error) => (
+            Config::default(),
+            Some(format!("não foi possível ler a configuração: {error}")),
+        ),
+    }
+}
+
 /// Interprets `MELOBUDNEXT_GUI_OFFLINE` as a boolean instead of a presence
 /// flag, so `0`, `false`, `no`, `off` and an empty value keep the GUI online.
 /// Unrecognized non-empty values are treated as enabled for backwards
@@ -2161,6 +2280,8 @@ fn offline_flag(value: Option<&str>) -> bool {
 }
 
 fn main() -> iced::Result {
+    let cli = Cli::parse();
+
     iced::application("MelobudsNext - QCY Melobuds Pro", update, view)
         .theme(theme)
         .window(iced::window::Settings {
@@ -2168,12 +2289,106 @@ fn main() -> iced::Result {
             resizable: false,
             ..Default::default()
         })
-        .run_with(App::new)
+        .run_with(move || App::new(cli))
 }
 
 #[cfg(test)]
 mod tests {
-    use super::offline_flag;
+    use super::{load_configuration, offline_flag, Cli};
+    use clap::Parser;
+    use melobudsnext::config::Config;
+    use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn temporary_directory() -> PathBuf {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!(
+            "melobudsnext-gui-test-{}-{unique}",
+            std::process::id()
+        ))
+    }
+
+    #[test]
+    fn parses_the_config_flag() {
+        let cli =
+            Cli::try_parse_from(["melobudsnext-gui", "--config", "/tmp/perfil.json"]).unwrap();
+
+        assert_eq!(
+            cli.config.as_deref(),
+            Some(std::path::Path::new("/tmp/perfil.json"))
+        );
+        assert!(!cli.offline);
+    }
+
+    #[test]
+    fn loads_the_configuration_from_the_requested_path() {
+        let directory = temporary_directory();
+        let path = directory.join("config.json");
+        Config::default()
+            .with_mac("AA:BB:CC:DD:EE:FF")
+            .save_to(&path)
+            .unwrap();
+
+        let cli =
+            Cli::try_parse_from(["melobudsnext-gui", "--config", path.to_str().unwrap()]).unwrap();
+        let (config, error) = load_configuration(&cli);
+
+        assert!(error.is_none());
+        assert_eq!(config.mac_address.as_deref(), Some("AA:BB:CC:DD:EE:FF"));
+
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn reports_configuration_errors_when_using_the_flag() {
+        let directory = temporary_directory();
+        std::fs::create_dir_all(&directory).unwrap();
+
+        // A directory cannot be read as a file, so loading must report an error.
+        let cli =
+            Cli::try_parse_from(["melobudsnext-gui", "--config", directory.to_str().unwrap()])
+                .unwrap();
+        let (config, error) = load_configuration(&cli);
+
+        assert_eq!(config, Config::default());
+        assert!(error.unwrap().contains("configuração"));
+
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn parses_the_offline_flag_with_clap() {
+        let cli = Cli::try_parse_from(["melobudsnext-gui", "--offline"]).unwrap();
+        assert!(cli.offline);
+
+        let cli = Cli::try_parse_from(["melobudsnext-gui"]).unwrap();
+        assert!(!cli.offline);
+    }
+
+    #[test]
+    fn rejects_positional_arguments_instead_of_ignoring_them() {
+        assert!(Cli::try_parse_from(["melobudsnext-gui", "unexpected"]).is_err());
+    }
+
+    #[test]
+    fn exposes_help_and_version() {
+        use clap::CommandFactory;
+
+        assert_eq!(
+            Cli::try_parse_from(["melobudsnext-gui", "--help"])
+                .unwrap_err()
+                .kind(),
+            clap::error::ErrorKind::DisplayHelp
+        );
+
+        let mut command = Cli::command();
+        let help = command.render_help().to_string();
+        assert!(help.contains("--offline"), "help was: {help}");
+        assert_eq!(command.get_version(), Some(env!("CARGO_PKG_VERSION")));
+    }
 
     #[test]
     fn treats_absent_or_false_values_as_online() {
@@ -2201,5 +2416,462 @@ mod tests {
                 "value {value:?} should enable offline mode"
             );
         }
+    }
+
+    fn offline_app() -> super::App {
+        let (app, _) = super::App::build(Config::default(), None, true);
+        app
+    }
+
+    fn online_app() -> super::App {
+        let (app, _) = super::App::build(Config::default(), None, false);
+        app
+    }
+
+    #[test]
+    fn shows_unknown_touch_functions_in_the_selector() {
+        use melobudsnext::protocol::touch::TouchFunction;
+
+        let function = TouchFunction::Unknown(0x42);
+        let options = super::TouchOption::options(function);
+
+        assert_eq!(options.len(), super::TouchOption::ALL.len() + 1);
+        let unknown = options
+            .iter()
+            .find(|option| option.0 == function)
+            .expect("unknown function must be selectable");
+        assert_eq!(unknown.to_string(), "Desconhecida (0x42)");
+
+        // Known values must not grow the list.
+        assert_eq!(
+            super::TouchOption::options(TouchFunction::Next).len(),
+            super::TouchOption::ALL.len()
+        );
+    }
+
+    #[test]
+    fn unknown_anc_is_preserved_and_never_applied_as_off() {
+        use melobudsnext::protocol::anc::AncMode;
+
+        let mut app = online_app();
+        app.state.anc = AncMode::Unknown([0x01, 0x09, 0x00]);
+
+        app.load_drafts();
+
+        assert_eq!(
+            app.anc_choice,
+            super::AncChoice::Unknown([0x01, 0x09, 0x00])
+        );
+        let error = app.active_anc_mode().unwrap_err();
+        assert!(error.contains("01 09 00"), "error was: {error}");
+    }
+
+    #[test]
+    fn offline_mode_blocks_every_device_action() {
+        use super::{Message, NotificationVolume, VolumeOption, OFFLINE_NOTICE};
+
+        let actions = [
+            Message::Connect,
+            Message::Refresh,
+            Message::Disconnect,
+            Message::ApplyAnc,
+            Message::ToggleGame(true),
+            Message::ToggleSleep(false),
+            Message::ToggleLdac(true),
+            Message::ApplyBalance,
+            Message::VolumeSelected(VolumeOption(NotificationVolume::Medium)),
+            Message::ApplyTouch,
+            Message::ApplyWear,
+            Message::ApplyRename,
+        ];
+
+        for action in actions {
+            let mut app = offline_app();
+            app.notice = None;
+
+            let _ = super::update(&mut app, action);
+
+            assert!(app.busy.is_none(), "offline action started a BLE task");
+            assert!(app.error.is_none(), "offline action produced an error");
+            assert_eq!(app.notice.as_deref(), Some(OFFLINE_NOTICE));
+        }
+    }
+
+    #[test]
+    fn offline_mode_does_not_change_toggles_optimistically() {
+        use super::Message;
+
+        let mut app = offline_app();
+        app.state.game_mode = false;
+        app.state.ldac = false;
+
+        let _ = super::update(&mut app, Message::ToggleGame(true));
+        let _ = super::update(&mut app, Message::ToggleLdac(true));
+
+        assert!(!app.state.game_mode);
+        assert!(!app.state.ldac);
+    }
+
+    #[test]
+    fn offline_mode_still_allows_local_drafts() {
+        use super::Message;
+
+        let mut app = offline_app();
+        let _ = super::update(&mut app, Message::Tab(super::Tab::Audio));
+        let _ = super::update(&mut app, Message::BalanceChanged(30));
+
+        assert_eq!(app.tab, super::Tab::Audio);
+        assert_eq!(app.balance, 30);
+    }
+
+    // -----------------------------------------------------------------------
+    // TST-03 — transições de estado da GUI
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn finish_applies_the_session_result_and_reloads_drafts() {
+        use super::ble_task::ActionResult;
+        use melobudsnext::protocol::anc::{AncMode, AncScene};
+        use melobudsnext::protocol::touch::{TouchFunction, TouchKey, TouchMapping};
+        use melobudsnext::DeviceState;
+
+        let mut touch = TouchMapping::new();
+        touch.set(TouchKey::LeftSingle, TouchFunction::PlayPause);
+        let state = DeviceState {
+            anc: AncMode::anc(AncScene::Indoor, Some(2)).unwrap(),
+            channel_balance: 30,
+            game_mode: true,
+            name: Some("Meu Fone".to_string()),
+            touch: Some(touch),
+            ..DeviceState::default()
+        };
+
+        let mut app = online_app();
+        app.busy = Some("Sincronizando estado…".to_string());
+        app.error = Some("erro antigo".to_string());
+
+        let _ = app.finish(ActionResult {
+            state: state.clone(),
+            notice: Some("Estado atualizado a partir do fone.".to_string()),
+            connected: true,
+            address: Some("AA:BB:CC:DD:EE:FF".to_string()),
+            refresh_drafts: true,
+            ..ActionResult::default()
+        });
+
+        assert!(app.busy.is_none());
+        assert!(app.connected);
+        assert_eq!(app.state, state);
+        assert_eq!(app.address_input, "AA:BB:CC:DD:EE:FF");
+        assert_eq!(app.anc_choice, super::AncChoice::Scene(AncScene::Indoor));
+        assert_eq!(app.anc_level, 2);
+        assert_eq!(app.balance, 30);
+        assert_eq!(
+            app.touch_draft.get(TouchKey::LeftSingle),
+            TouchFunction::PlayPause
+        );
+        assert_eq!(app.rename_input, "Meu Fone");
+        assert!(app.error.is_none());
+        assert_eq!(
+            app.notice.as_deref(),
+            Some("Estado atualizado a partir do fone.")
+        );
+    }
+
+    #[test]
+    fn finish_reports_a_lost_link_and_keeps_drafts_without_refresh() {
+        use super::ble_task::ActionResult;
+        use melobudsnext::protocol::anc::AncScene;
+        use melobudsnext::DeviceState;
+
+        let mut app = online_app();
+        app.connected = true;
+        app.busy = Some("Desligando…".to_string());
+        app.anc_choice = super::AncChoice::Scene(AncScene::Wind);
+
+        let _ = app.finish(ActionResult {
+            state: DeviceState::default(),
+            error: Some("BLE link lost; connect again".to_string()),
+            connected: false,
+            refresh_drafts: false,
+            ..ActionResult::default()
+        });
+
+        assert!(!app.connected);
+        assert!(app.busy.is_none());
+        assert_eq!(app.error.as_deref(), Some("BLE link lost; connect again"));
+        assert!(app.notice.is_none());
+        // The action did not ask for a draft reload, so local edits survive.
+        assert_eq!(app.anc_choice, super::AncChoice::Scene(AncScene::Wind));
+    }
+
+    #[test]
+    fn load_drafts_maps_every_anc_mode() {
+        use super::AncChoice;
+        use melobudsnext::protocol::anc::{AncMode, AncScene, TransparencyMode};
+
+        let cases = [
+            (AncMode::Off, AncChoice::Off),
+            (
+                AncMode::anc(AncScene::Daily, Some(3)).unwrap(),
+                AncChoice::Scene(AncScene::Daily),
+            ),
+            (
+                AncMode::transparency(TransparencyMode::Intensity(4)).unwrap(),
+                AncChoice::Transparency,
+            ),
+            (
+                AncMode::transparency(TransparencyMode::VoiceEnhancement).unwrap(),
+                AncChoice::Transparency,
+            ),
+            (
+                AncMode::Unknown([0x02, 0x07, 0x01]),
+                AncChoice::Unknown([0x02, 0x07, 0x01]),
+            ),
+        ];
+
+        for (mode, expected) in cases {
+            let mut app = online_app();
+            app.state.anc = mode;
+            app.load_drafts();
+            assert_eq!(app.anc_choice, expected, "mode {mode}");
+        }
+
+        let mut app = online_app();
+        app.state.anc = AncMode::transparency(TransparencyMode::Intensity(5)).unwrap();
+        app.load_drafts();
+        assert!(!app.transparency_voice);
+        assert_eq!(app.transparency_intensity, 5);
+
+        app.state.anc = AncMode::transparency(TransparencyMode::VoiceEnhancement).unwrap();
+        app.load_drafts();
+        assert!(app.transparency_voice);
+
+        app.state.anc = AncMode::anc(AncScene::Indoor, Some(1)).unwrap();
+        app.load_drafts();
+        assert_eq!(app.anc_level, 1);
+    }
+
+    #[test]
+    fn load_drafts_reads_volume_touch_wear_and_name() {
+        use melobudsnext::protocol::commands::{NotificationVolume, WearDetection};
+        use melobudsnext::protocol::touch::{TouchFunction, TouchKey, TouchMapping};
+
+        let mut app = online_app();
+        let mut touch = TouchMapping::new();
+        touch.set(TouchKey::RightDouble, TouchFunction::VolumeUp);
+        app.state.touch = Some(touch.clone());
+        app.state.notification_volume = Some(0x08);
+        app.state.channel_balance = 20;
+        app.state.wear_detection = Some(WearDetection {
+            enabled: true,
+            music_index: 2,
+            keep_anc: true,
+            tone: 3,
+        });
+        app.state.name = Some("Meu Fone".to_string());
+
+        app.load_drafts();
+
+        assert_eq!(app.balance, 20);
+        assert_eq!(
+            app.volume,
+            Some(super::VolumeOption(NotificationVolume::High))
+        );
+        assert_eq!(app.touch_draft, touch);
+        assert!(app.wear_enabled);
+        assert!(app.wear_keep_anc);
+        assert_eq!(app.wear_music, "2");
+        assert_eq!(app.wear_tone, "3");
+        assert_eq!(app.rename_input, "Meu Fone");
+    }
+
+    #[test]
+    fn load_drafts_uses_defaults_when_the_state_is_missing() {
+        let mut app = online_app();
+        app.state.touch = None;
+        app.state.notification_volume = None;
+        app.state.wear_detection = None;
+        app.state.name = None;
+
+        app.load_drafts();
+
+        assert_eq!(app.volume, None);
+        assert_eq!(app.touch_draft, Default::default());
+        assert!(!app.wear_enabled);
+        assert!(!app.wear_keep_anc);
+        assert_eq!(app.wear_music, "1");
+        assert_eq!(app.wear_tone, "0");
+        assert!(app.rename_input.is_empty());
+    }
+
+    #[test]
+    fn active_anc_mode_validates_the_draft() {
+        use super::AncChoice;
+        use melobudsnext::protocol::anc::{AncMode, AncScene, TransparencyMode};
+
+        let mut app = online_app();
+
+        app.anc_choice = AncChoice::Off;
+        assert_eq!(app.active_anc_mode(), Ok(AncMode::Off));
+
+        app.anc_choice = AncChoice::Scene(AncScene::Noise);
+        app.anc_level = 3;
+        assert_eq!(
+            app.active_anc_mode(),
+            Ok(AncMode::anc(AncScene::Noise, Some(3)).unwrap())
+        );
+
+        app.anc_level = 0;
+        assert!(app.active_anc_mode().is_err());
+
+        app.anc_choice = AncChoice::Scene(AncScene::Wind);
+        assert_eq!(
+            app.active_anc_mode(),
+            Ok(AncMode::anc(AncScene::Wind, None).unwrap())
+        );
+
+        app.anc_choice = AncChoice::Transparency;
+        app.transparency_voice = false;
+        app.transparency_intensity = 6;
+        assert_eq!(
+            app.active_anc_mode(),
+            Ok(AncMode::transparency(TransparencyMode::Intensity(6)).unwrap())
+        );
+
+        app.transparency_intensity = 7;
+        assert!(app.active_anc_mode().is_err());
+    }
+
+    #[test]
+    fn offline_build_skips_the_automatic_connection() {
+        let config = Config::default().with_mac("AA:BB:CC:DD:EE:FF");
+
+        let (online, _) = super::App::build(config.clone(), None, false);
+        assert_eq!(online.busy.as_deref(), Some("Conectando ao fone…"));
+        assert_eq!(online.address_input, "AA:BB:CC:DD:EE:FF");
+
+        let (offline, _) = super::App::build(config, None, true);
+        assert!(offline.busy.is_none());
+        assert_eq!(offline.address_input, "AA:BB:CC:DD:EE:FF");
+    }
+
+    // -----------------------------------------------------------------------
+    // TST-06 — regressões de COR-03..07 e COR-10
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn cor_03_offline_actions_never_reach_the_session() {
+        use super::{view, Message, Tab};
+
+        let mut app = offline_app();
+        app.notice = None;
+
+        for action in [Message::ApplyAnc, Message::ApplyTouch, Message::ApplyWear] {
+            let _ = super::update(&mut app, action);
+            assert!(app.busy.is_none());
+            assert!(app.notice.is_some());
+        }
+
+        // The whole layout must still render without a BLE session.
+        for tab in Tab::ALL {
+            app.tab = tab;
+            let _ = view(&app);
+        }
+    }
+
+    #[test]
+    fn cor_04_lost_or_unknown_link_discards_the_session() {
+        use super::ble_task::discards_client;
+
+        assert!(discards_client(Some(false)));
+        assert!(discards_client(None));
+        assert!(!discards_client(Some(true)));
+    }
+
+    #[test]
+    fn cor_05_successful_toggle_survives_without_an_echo() {
+        use super::ble_task::{apply_command_result, ActionResult};
+        use melobudsnext::protocol::commands;
+        use melobudsnext::DeviceState;
+
+        let mut app = online_app();
+        let _ = super::update(&mut app, super::Message::ToggleGame(true));
+        assert!(app.state.game_mode);
+
+        // The session now applies the command itself because no echo arrived.
+        let mut session_state = DeviceState::default();
+        apply_command_result(&mut session_state, &commands::game_mode(true), &[]);
+
+        let _ = app.finish(ActionResult {
+            state: session_state,
+            connected: true,
+            notice: Some("Modo jogo ativado.".to_string()),
+            ..ActionResult::default()
+        });
+
+        assert!(app.state.game_mode, "the toggle must not revert");
+    }
+
+    #[test]
+    fn cor_06_unknown_anc_is_never_sent_as_off() {
+        use melobudsnext::protocol::anc::AncMode;
+
+        let mut app = online_app();
+        app.state.anc = AncMode::Unknown([0x01, 0x09, 0x00]);
+        app.load_drafts();
+
+        let _ = super::update(&mut app, super::Message::ApplyAnc);
+
+        assert!(app.busy.is_none(), "no BLE command must be dispatched");
+        assert!(app.error.is_some(), "the user must be told about the state");
+        assert_eq!(app.state.anc, AncMode::Unknown([0x01, 0x09, 0x00]));
+    }
+
+    #[test]
+    fn cor_07_unknown_touch_is_visible_and_preserved_on_save() {
+        use melobudsnext::protocol::touch::{TouchFunction, TouchKey, TouchMapping};
+
+        let mut app = online_app();
+        let mut touch = TouchMapping::new();
+        touch.set(TouchKey::LeftSingle, TouchFunction::Unknown(0x42));
+        app.state.touch = Some(touch);
+        app.load_drafts();
+
+        assert_eq!(
+            app.touch_draft.get(TouchKey::LeftSingle),
+            TouchFunction::Unknown(0x42)
+        );
+
+        let option = super::TouchOption::options(TouchFunction::Unknown(0x42))
+            .into_iter()
+            .find(|option| option.0 == TouchFunction::Unknown(0x42))
+            .expect("unknown value must be listed");
+        let _ = super::update(
+            &mut app,
+            super::Message::TouchChanged(TouchKey::LeftSingle, option),
+        );
+
+        // The draft keeps the original byte when the map is written back.
+        assert_eq!(app.touch_draft.encode()[1], 0x42);
+    }
+
+    #[test]
+    fn cor_10_help_and_version_cover_the_gui_flags() {
+        use clap::CommandFactory;
+
+        let mut command = Cli::command();
+        let help = command.render_help().to_string();
+
+        for flag in ["--offline", "--config"] {
+            assert!(help.contains(flag), "help was: {help}");
+        }
+
+        assert_eq!(
+            Cli::try_parse_from(["melobudsnext-gui", "--version"])
+                .unwrap_err()
+                .kind(),
+            clap::error::ErrorKind::DisplayVersion
+        );
     }
 }

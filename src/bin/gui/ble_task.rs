@@ -90,6 +90,7 @@ impl Session {
 
         if let Err(error) = inner.execute(action, &mut result).await {
             result.error = Some(format!("{error:#}"));
+            inner.drop_client_if_link_lost().await;
         }
 
         result.state = inner.state.clone();
@@ -142,14 +143,6 @@ impl SessionInner {
                     client.exchange(&packet, COMMAND_WINDOW).await?
                 };
 
-                for value in values {
-                    if let Err(error) = self.state.apply_bytes(&value) {
-                        result
-                            .warnings
-                            .push(format!("notificação inválida: {error}"));
-                    }
-                }
-
                 if reconnect {
                     let report = {
                         let client = self.client_mut()?;
@@ -162,6 +155,12 @@ impl SessionInner {
                     result.warnings.extend(report.warnings);
                     result.refresh_drafts = true;
                 }
+
+                // Applied after the reconnection sync so a successful toggle is
+                // kept even when the firmware does not echo it in time.
+                result
+                    .warnings
+                    .extend(apply_command_result(&mut self.state, &packet, &values));
 
                 if refresh_drafts {
                     result.refresh_drafts = true;
@@ -216,6 +215,22 @@ impl SessionInner {
             .ok_or_else(|| anyhow!("fone não conectado; clique em Conectar"))
     }
 
+    /// Discards the client when a failed action also lost the BLE link.
+    ///
+    /// The UI then renders "Desconectado" and the next action asks the user to
+    /// connect again instead of operating on a dead session.
+    async fn drop_client_if_link_lost(&mut self) {
+        let Some(client) = self.client.as_ref() else {
+            return;
+        };
+
+        let link_alive = client.is_connected().await.ok();
+
+        if discards_client(link_alive) {
+            self.client = None;
+        }
+    }
+
     async fn connect_and_sync(&mut self) -> Result<Vec<String>> {
         if let Some(client) = self.client.take() {
             let _ = client.disconnect().await;
@@ -253,5 +268,91 @@ impl SessionInner {
         };
         self.state = report.state;
         Ok(report.warnings)
+    }
+}
+
+/// Whether the session must discard its client after a failed action.
+///
+/// The client is dropped unless the peripheral explicitly confirms that the
+/// link is still up; an inconclusive probe is treated as a lost link so the UI
+/// never keeps showing "Conectado" for a session that cannot be used.
+pub(super) fn discards_client(link_alive: Option<bool>) -> bool {
+    link_alive != Some(true)
+}
+/// Applies the notifications produced by a command to the state.
+///
+/// Echoes are authoritative, but the firmware can stay silent when the value
+/// did not change. When no notification is recognized, the requested packet is
+/// applied instead, so the UI keeps the value the user chose instead of
+/// reverting the control after a successful command.
+///
+/// Returns one warning per notification that could not be decoded.
+pub(super) fn apply_command_result(
+    state: &mut DeviceState,
+    packet: &Packet,
+    values: &[Vec<u8>],
+) -> Vec<String> {
+    let mut warnings = Vec::new();
+    let mut recognized = 0usize;
+
+    for value in values {
+        match state.apply_bytes(value) {
+            Ok(count) => recognized += count,
+            Err(error) => warnings.push(format!("notificação inválida: {error}")),
+        }
+    }
+
+    if recognized == 0 {
+        state.apply(packet);
+    }
+
+    warnings
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{apply_command_result, discards_client};
+    use melobudsnext::protocol::commands;
+    use melobudsnext::DeviceState;
+
+    #[test]
+    fn discards_the_client_when_the_link_is_gone_or_unknown() {
+        assert!(discards_client(Some(false)));
+        assert!(discards_client(None));
+    }
+
+    #[test]
+    fn keeps_the_client_when_the_link_is_alive() {
+        assert!(!discards_client(Some(true)));
+    }
+
+    #[test]
+    fn keeps_the_requested_value_when_the_command_is_not_echoed() {
+        let mut state = DeviceState::default();
+
+        let warnings = apply_command_result(&mut state, &commands::game_mode(true), &[]);
+
+        assert!(warnings.is_empty());
+        assert!(state.game_mode);
+    }
+
+    #[test]
+    fn prefers_the_echo_when_the_firmware_answers() {
+        let mut state = DeviceState::default();
+        let echo = vec![0xFF, 0x03, 0x09, 0x01, 0x02];
+
+        apply_command_result(&mut state, &commands::game_mode(true), &[echo]);
+
+        assert!(!state.game_mode);
+    }
+
+    #[test]
+    fn keeps_the_requested_value_when_only_invalid_notifications_arrive() {
+        let mut state = DeviceState::default();
+
+        let warnings = apply_command_result(&mut state, &commands::ldac(true), &[vec![0x00]]);
+
+        assert_eq!(warnings.len(), 1);
+        assert!(state.ldac);
     }
 }
