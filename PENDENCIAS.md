@@ -1488,32 +1488,32 @@ Cada sessão adiciona aqui a subseção do lote concluído, antes do merge.
     (conferindo o ícone) em Windows; só depois publicar os artefatos e o
     `SHA256SUMS`.
 
-### Release 0.2.0
+### Release 0.2.0 (publicada)
 
 - **Versão:** `0.2.0` em `Cargo.toml`, `Cargo.lock` e `packaging/aur/PKGBUILD`;
   `CHANGELOG.md` criado.
-- **Tag:** `v0.2.0` anotada no merge da release (`bf38ee2`); o push é manual. A
-  `main` fica um commit à frente da tag (`09a747a`) por causa do checksum da
-  receita.
-- **Artefatos em `dist/`** (ignorado pelo git):
+- **Tag:** `v0.2.0` publicada em `bf38ee2` (merge da release).
+- **GitHub Release:** publicada em 2026-11-22 com os artefatos abaixo.
+- **Artefatos publicados:**
   - `melobudsnext-0.2.0-x86_64-unknown-linux-gnu.tar.gz` (5,7 MiB) — SHA-256
     `e67cca9ca79d8a756c8698bfd4907710a415b7facab79c03d03e2a25da37b41b`;
   - `melobudsnext-gui.exe` (7.635.968 bytes; subsistema GUI, CRT estático,
     ícone embutido) — SHA-256
     `ef15aaa1f89ce5ca88437a1373bf7bfdc765738f083b6a2d9a50862e9d4de328`;
-  - `SHA256SUMS`, `.sha256` individuais e `release-notes.md` para o
-    `gh release create`.
+  - `SHA256SUMS` e os `.sha256` individuais.
 - **Validação:** `makepkg` gerou `melobudsnext 0.2.0-1` com `check()` (135 + 36
   + 8 testes) e os binários respondem `0.2.0`; a instalação via `makepkg -si` foi
   confirmada pelo usuário no Arch; o `.exe` foi validado no Windows pelo usuário
   (interface, conexão e ícone). Gate completo verde na `main`.
-- **Checksum do `PKGBUILD`:** `85538c25664e8ca74d1dab9d2d7147e7c7400f89f73b1cf00b4856d3a0a1e788`,
-  do snapshot `git archive` da tag com prefixo `melobudsnext-0.2.0/`. Depois do
-  push, rode `updpkgsums` para fixar o hash do tarball do GitHub (os arquivos não
-  são byte a byte iguais) e regenere o `.SRCINFO`.
-- **Pendente (manual):** push da `main` e da tag `v0.2.0`, `gh release create`
-  com os artefatos, o `SHA256SUMS` e as notas, e a submissão ao AUR (etapa
-  separada).
+- **Checksum do `PKGBUILD`:** `e950444f9ffdab3d94350aa20108484ca6a7b352e04177b30071e4d54887e791`,
+  do tarball oficial da tag (gerado com `updpkgsums`). O caminho público
+  (`makepkg` baixando a tag) foi validado depois: download, checksum,
+  `prepare()` e `check()` com a suíte completa.
+- **README:** reescrito para o público final em 2026-11-22 (`5315886`) e já está
+  na `main`. Os artefatos da release 0.2.0 preservam o README antigo; o novo
+  texto entra no `.tar.gz` e no pacote a partir da próxima release (0.2.1).
+- **Pendente:** submeter o `PKGBUILD`/`.SRCINFO` (checksum oficial já fixado) ao
+  AUR e decidir a próxima versão para levar o README novo aos artefatos.
 
 ## Checklist de release (após o Lote 9)
 

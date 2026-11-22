@@ -144,10 +144,11 @@ demora. O pacote instala:
 - `/usr/share/icons/hicolor/scalable/apps/melobudsnext.svg`;
 - licença e documentação em `/usr/share/licenses` e `/usr/share/doc`.
 
-O checksum gravado no repositório vem de um tarball de `git archive` usado na
-validação local; qualquer commit novo o desatualiza, então rode o
-`build-local.sh` (ou `updpkgsums`) para o seu commit. O `makepkg` direto, sem o
-script, só funciona depois de a tag existir e de o `sha256sums` ser atualizado.
+O `sha256sums` gravado no repositório é o do tarball oficial da tag `v0.2.0`
+(gerado com `updpkgsums`); ele só muda se a tag for recriada. Para testar commits
+ainda não publicados, use o `build-local.sh`, que recalcula o checksum do
+snapshot local e deixa o `PKGBUILD` modificado no working tree (reverta com
+`git checkout -- packaging/aur/PKGBUILD` depois do teste).
 
 ### Publicar a tag e preparar o AUR (etapa posterior)
 
