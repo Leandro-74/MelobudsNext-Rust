@@ -1065,10 +1065,10 @@ Cada sessão adiciona aqui a subseção do lote concluído, antes do merge.
 - **Status:** Implementado
 - **Branch:** `feat/gui-tempo-real`
 - **Commits:** `9067776` (IMP-01), `871a1bf` (ajuste da leitura periódica),
-  `2e7215d` (DOC-05)
+  `8cea874` (organização dos testes), `2e7215d` (DOC-05)
 - **Validação:** gate completo na branch e na `main` (`cargo fmt --check`,
   `cargo clippy --all-targets -- -D warnings`, `cargo test --all-targets` com
-  127 testes da lib + 34 da GUI + 6 de integração, `cargo build --release`).
+  127 testes da lib + 36 da GUI + 6 de integração, `cargo build --release`).
   Hardware: Arch Linux/KDE Wayland, firmware 2.0.6. GUI conectada ao fone real
   via configuração existente; outro processo (CLI) alterou o ANC de
   `noise/level-3` para `indoor/level-1` e a GUI passou a exibir o novo valor sem
