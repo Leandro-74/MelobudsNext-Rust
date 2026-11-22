@@ -6,13 +6,14 @@
 //! notifications as ordinary async methods.
 
 use std::collections::BTreeSet;
+use std::future::Future;
 use std::pin::Pin;
 use std::time::Duration;
 
 use anyhow::{anyhow, bail, Context, Result};
 use btleplug::api::{
-    Central, CharPropFlags, Characteristic, Manager as _, Peripheral as _, ScanFilter,
-    ValueNotification, WriteType,
+    Central, CentralState, CharPropFlags, Characteristic, Manager as _, Peripheral as _,
+    ScanFilter, ValueNotification, WriteType,
 };
 use btleplug::platform::{Adapter, Manager, Peripheral};
 use futures::stream::Stream;
@@ -37,6 +38,10 @@ const NOTIFICATION_SETTLE: Duration = Duration::from_millis(150);
 /// Extra time kept after the last expected query response, so a trailing
 /// notification from the same burst is not lost.
 const SYNC_GRACE: Duration = Duration::from_millis(100);
+/// Polls made while the adapter reports `Unknown` right after initialisation.
+const ADAPTER_STATE_ATTEMPTS: u32 = 10;
+/// Delay between adapter state polls.
+const ADAPTER_STATE_DELAY: Duration = Duration::from_millis(100);
 
 /// Opcodes queried after connecting, in the order used by the reference
 /// implementation.
@@ -651,17 +656,46 @@ async fn first_adapter() -> Result<Adapter> {
 }
 
 async fn ensure_powered(adapter: &Adapter) -> Result<()> {
-    use btleplug::api::CentralState;
+    poll_adapter_state(
+        || async {
+            adapter
+                .adapter_state()
+                .await
+                .context("failed to query adapter state")
+        },
+        ADAPTER_STATE_ATTEMPTS,
+        ADAPTER_STATE_DELAY,
+    )
+    .await
+}
 
-    match adapter
-        .adapter_state()
-        .await
-        .context("failed to query adapter state")?
-    {
-        CentralState::PoweredOn => Ok(()),
-        CentralState::PoweredOff => bail!("the Bluetooth adapter is powered off"),
-        CentralState::Unknown => bail!("the Bluetooth adapter state is unknown"),
+/// Polls the adapter until it is powered on.
+///
+/// Some backends report [`CentralState::Unknown`] for a short while after the
+/// adapter is initialised. A transient `Unknown` is retried; `PoweredOff` is
+/// still an immediate error, and a state that never settles gets a distinct
+/// message so the caller knows the difference.
+async fn poll_adapter_state<F, Fut>(mut query: F, attempts: u32, delay: Duration) -> Result<()>
+where
+    F: FnMut() -> Fut,
+    Fut: Future<Output = Result<CentralState>>,
+{
+    let attempts = attempts.max(1);
+
+    for attempt in 1..=attempts {
+        match query().await? {
+            CentralState::PoweredOn => return Ok(()),
+            CentralState::PoweredOff => bail!("the Bluetooth adapter is powered off"),
+            CentralState::Unknown => {
+                if attempt == attempts {
+                    bail!("the Bluetooth adapter state remained unknown after {attempts} attempts");
+                }
+                tokio::time::sleep(delay).await;
+            }
+        }
     }
+
+    unreachable!("the adapter state loop returns or fails on every attempt")
 }
 
 async fn find_peripheral(adapter: &Adapter, target: &str, timeout: Duration) -> Result<Peripheral> {
@@ -935,6 +969,70 @@ mod tests {
             tracker.stop_at(deadline),
             now + Duration::from_millis(350) + SYNC_GRACE
         );
+    }
+
+    #[tokio::test]
+    async fn retries_while_the_adapter_state_is_unknown() {
+        use std::collections::VecDeque;
+        use std::sync::{Arc, Mutex as StdMutex};
+
+        let states = Arc::new(StdMutex::new(VecDeque::from([
+            CentralState::Unknown,
+            CentralState::Unknown,
+            CentralState::PoweredOn,
+        ])));
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+
+        let result = poll_adapter_state(
+            || {
+                let states = states.clone();
+                let calls = calls.clone();
+                async move {
+                    calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    Ok(states.lock().unwrap().pop_front().expect("scripted state"))
+                }
+            },
+            5,
+            Duration::ZERO,
+        )
+        .await;
+
+        assert!(result.is_ok());
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 3);
+    }
+
+    #[tokio::test]
+    async fn powered_off_adapter_fails_without_retrying() {
+        use std::collections::VecDeque;
+        use std::sync::{Arc, Mutex as StdMutex};
+
+        let states = Arc::new(StdMutex::new(VecDeque::from([
+            CentralState::PoweredOff,
+            CentralState::PoweredOn,
+        ])));
+
+        let result = poll_adapter_state(
+            || {
+                let states = states.clone();
+                async move { Ok(states.lock().unwrap().pop_front().expect("scripted state")) }
+            },
+            5,
+            Duration::ZERO,
+        )
+        .await;
+
+        let error = result.unwrap_err();
+        assert!(error.to_string().contains("powered off"));
+        assert_eq!(states.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn unknown_adapter_state_reports_a_distinct_error() {
+        let result =
+            poll_adapter_state(|| async { Ok(CentralState::Unknown) }, 3, Duration::ZERO).await;
+
+        let error = result.unwrap_err();
+        assert!(error.to_string().contains("remained unknown"));
     }
 
     #[test]

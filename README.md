@@ -224,6 +224,9 @@ Python, faça uma cópia antes, porque ele espera a chave `address`.
 - Na GUI, cada ação verifica o link ao terminar. Se o fone foi desligado, a
   sessão é descartada, a interface volta para "Desconectado" e o erro aparece no
   rodapé em vez de manter um estado antigo.
+- Se o adaptador Bluetooth reporta estado desconhecido (`Unknown`) logo após a
+  inicialização, o comando tenta novamente por até 1 s (10 tentativas de 100 ms)
+  antes de falhar, em vez de abortar imediatamente.
 - Saída `--json` é JSON puro em `stdout`.
 - Não há TUI; os comandos do CLI são de uma execução só, com `device monitor`
   para acompanhar notificações. A interface gráfica é um binário separado
