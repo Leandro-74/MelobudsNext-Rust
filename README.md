@@ -60,6 +60,9 @@ como `warning:` em vez de abortar.
 Cada ação abaixo sincroniza o estado, envia o comando, aplica os echos e imprime
 o estado resultante. `--wait SEGUNDOS` controla a espera pelos echos (padrão 1 s)
 e `--json` imprime apenas o JSON em `stdout` (mensagens vão para `stderr`).
+Com `--no-sync`, a conexão é aberta sem sincronizar o estado: o comando é
+enviado imediatamente e a saída mostra apenas os campos devolvidos pelo eco (ou
+pelo sync automático de um comando LDAC).
 
 | Comando | Efeito |
 | --- | --- |
@@ -211,12 +214,19 @@ Python, faça uma cópia antes, porque ele espera a chave `address`.
 - `rename` vazio não apaga o nome atual.
 - O `sync` não aborta por causa de uma leitura opcional; falhas viram avisos.
 - As consultas `0xFE` são enviadas a cada 50 ms enquanto as notificações são
-  lidas, evitando perder respostas.
+  lidas, evitando perder respostas. O `sync` termina assim que todos os opcodes
+  consultados respondem, mantendo 100 ms de tolerância para notificações
+  atrasadas; se algum não responder, espera a janela completa (`--wait`).
+- A subscrição de notificações é aberta uma vez por sessão e reutilizada por
+  todas as ações; ela só é refeita quando a conexão é restabelecida.
 - Depois de mudar LDAC, a conexão é refeita automaticamente (10 tentativas, 3 s
   entre elas), como no cliente Python.
 - Na GUI, cada ação verifica o link ao terminar. Se o fone foi desligado, a
   sessão é descartada, a interface volta para "Desconectado" e o erro aparece no
   rodapé em vez de manter um estado antigo.
+- Se o adaptador Bluetooth reporta estado desconhecido (`Unknown`) logo após a
+  inicialização, o comando tenta novamente por até 1 s (10 tentativas de 100 ms)
+  antes de falhar, em vez de abortar imediatamente.
 - Saída `--json` é JSON puro em `stdout`.
 - Não há TUI; os comandos do CLI são de uma execução só, com `device monitor`
   para acompanhar notificações. A interface gráfica é um binário separado

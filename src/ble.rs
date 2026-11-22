@@ -6,24 +6,26 @@
 //! notifications as ordinary async methods.
 
 use std::collections::BTreeSet;
+use std::future::Future;
 use std::pin::Pin;
 use std::time::Duration;
 
 use anyhow::{anyhow, bail, Context, Result};
 use btleplug::api::{
-    Central, CharPropFlags, Characteristic, Manager as _, Peripheral as _, ScanFilter,
-    ValueNotification, WriteType,
+    Central, CentralState, CharPropFlags, Characteristic, Manager as _, Peripheral as _,
+    ScanFilter, ValueNotification, WriteType,
 };
 use btleplug::platform::{Adapter, Manager, Peripheral};
 use futures::stream::Stream;
 use futures::StreamExt;
+use tokio::sync::Mutex;
 use tokio::time::Instant;
 use uuid::Uuid;
 
 use crate::config::BleUuids;
 use crate::hex;
 use crate::protocol::commands;
-use crate::protocol::framing::Packet;
+use crate::protocol::framing::{self, Packet};
 use crate::protocol::opcode::Opcode;
 use crate::protocol::readings::{Battery, FirmwareVersion};
 use crate::protocol::touch::TouchMapping;
@@ -33,6 +35,13 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 const SCAN_POLL_INTERVAL: Duration = Duration::from_millis(250);
 const QUERY_INTERVAL: Duration = Duration::from_millis(50);
 const NOTIFICATION_SETTLE: Duration = Duration::from_millis(150);
+/// Extra time kept after the last expected query response, so a trailing
+/// notification from the same burst is not lost.
+const SYNC_GRACE: Duration = Duration::from_millis(100);
+/// Polls made while the adapter reports `Unknown` right after initialisation.
+const ADAPTER_STATE_ATTEMPTS: u32 = 10;
+/// Delay between adapter state polls.
+const ADAPTER_STATE_DELAY: Duration = Duration::from_millis(100);
 
 /// Opcodes queried after connecting, in the order used by the reference
 /// implementation.
@@ -58,6 +67,46 @@ pub type NotificationStream = Pin<Box<dyn Stream<Item = ValueNotification> + Sen
 pub struct SyncReport {
     pub state: DeviceState,
     pub warnings: Vec<String>,
+}
+
+/// Tracks which query responses already arrived during a sync.
+///
+/// `sync` ends as soon as every target answered plus a short grace period,
+/// instead of always waiting for the full listen window.
+struct QueryTracker {
+    pending: BTreeSet<u8>,
+    grace: Duration,
+    done_at: Option<Instant>,
+}
+
+impl QueryTracker {
+    fn new(targets: impl IntoIterator<Item = Opcode>, grace: Duration) -> Self {
+        Self {
+            pending: targets.into_iter().map(Opcode::as_u8).collect(),
+            grace,
+            done_at: None,
+        }
+    }
+
+    /// Records the opcodes carried by one notification.
+    fn observe(&mut self, bytes: &[u8], now: Instant) {
+        let Ok(packets) = framing::parse(bytes) else {
+            return;
+        };
+
+        for packet in packets {
+            self.pending.remove(&packet.opcode);
+        }
+
+        if self.pending.is_empty() && self.done_at.is_none() {
+            self.done_at = Some(now + self.grace);
+        }
+    }
+
+    /// Instant at which the wait may end, capped by the full window deadline.
+    fn stop_at(&self, deadline: Instant) -> Instant {
+        self.done_at.map_or(deadline, |done| done.min(deadline))
+    }
 }
 
 /// A device found during a scan.
@@ -136,6 +185,12 @@ pub struct BleSession {
     battery: Option<Characteristic>,
     firmware: Option<Characteristic>,
     touch: Option<Characteristic>,
+    /// Notification stream kept open for the whole session.
+    ///
+    /// `btleplug` requires the stream to be polled mutably, so it lives behind
+    /// an async mutex shared by `sync` and `exchange`. The subscription is
+    /// dropped and reopened only when the link is rebuilt.
+    notifications: Mutex<Option<NotificationStream>>,
 }
 
 /// Characteristics resolved for a connected device.
@@ -189,6 +244,7 @@ impl BleSession {
                 battery: resolved.battery,
                 firmware: resolved.firmware,
                 touch: resolved.touch,
+                notifications: Mutex::new(None),
             }),
             Err(error) => {
                 let _ = peripheral.disconnect().await;
@@ -236,6 +292,9 @@ impl BleSession {
         self.battery = resolved.battery;
         self.firmware = resolved.firmware;
         self.touch = resolved.touch;
+        // The old subscription belongs to the previous link; reopen it lazily
+        // on the next notification-consuming operation.
+        *self.notifications.get_mut() = None;
         Ok(())
     }
 
@@ -367,19 +426,50 @@ impl BleSession {
             .context("failed to write touch mapping")
     }
 
-    /// Subscribes to command notifications and returns the notification stream.
-    pub async fn subscribe_commands(&self) -> Result<NotificationStream> {
-        self.peripheral
-            .subscribe(&self.notification)
-            .await
-            .context("failed to subscribe to command notifications")?;
-        let notifications = self
-            .peripheral
-            .notifications()
-            .await
-            .context("failed to open notification stream")?;
-        tokio::time::sleep(NOTIFICATION_SETTLE).await;
-        Ok(notifications)
+    /// Returns the session-wide notification stream, subscribing on first use.
+    ///
+    /// The subscription is kept open until [`BleSession::refresh`] rebuilds the
+    /// link, so commands and syncs no longer pay the settle delay every time.
+    async fn notification_stream(
+        &self,
+    ) -> Result<tokio::sync::MutexGuard<'_, Option<NotificationStream>>> {
+        let mut slot = self.notifications.lock().await;
+
+        if slot.is_none() {
+            self.peripheral
+                .subscribe(&self.notification)
+                .await
+                .context("failed to subscribe to command notifications")?;
+            let stream = self
+                .peripheral
+                .notifications()
+                .await
+                .context("failed to open notification stream")?;
+            tokio::time::sleep(NOTIFICATION_SETTLE).await;
+            *slot = Some(stream);
+        }
+
+        Ok(slot)
+    }
+
+    /// Waits for the next command notification on the persistent stream.
+    ///
+    /// Returns `None` when the backend closes the stream.
+    pub async fn next_notification(&self) -> Result<Option<ValueNotification>> {
+        let mut slot = self.notification_stream().await?;
+        let stream = slot
+            .as_mut()
+            .ok_or_else(|| anyhow!("notification stream is not open"))?;
+        Ok(stream.next().await)
+    }
+
+    /// Collects command notifications for `listen` using the session stream.
+    pub async fn receive(&self, listen: Duration) -> Result<Vec<Vec<u8>>> {
+        let mut slot = self.notification_stream().await?;
+        let stream = slot
+            .as_mut()
+            .ok_or_else(|| anyhow!("notification stream is not open"))?;
+        Ok(receive_values(stream, self.notification.uuid, listen).await)
     }
 
     /// Reads the direct characteristics, queries the remaining state and waits
@@ -413,13 +503,22 @@ impl BleSession {
             }
         }
 
-        let mut notifications = self.subscribe_commands().await?;
+        let mut slot = self.notification_stream().await?;
+        let notifications = slot
+            .as_mut()
+            .ok_or_else(|| anyhow!("notification stream is not open"))?;
         let deadline = Instant::now() + listen;
+        let mut tracker = QueryTracker::new(QUERY_TARGETS, SYNC_GRACE);
         let mut targets = QUERY_TARGETS.into_iter();
         let mut next_query = Instant::now();
 
         while Instant::now() < deadline {
-            let wake = next_query.min(deadline);
+            let stop_at = tracker.stop_at(deadline);
+            if Instant::now() >= stop_at {
+                break;
+            }
+
+            let wake = next_query.min(stop_at);
 
             tokio::select! {
                 _ = tokio::time::sleep_until(wake) => {
@@ -448,6 +547,7 @@ impl BleSession {
                     if notification.uuid != self.notification.uuid {
                         continue;
                     }
+                    tracker.observe(&notification.value, Instant::now());
                     if let Err(error) = report.state.apply_bytes(&notification.value) {
                         report.warnings.push(format!(
                             "notification {}: {error}",
@@ -464,43 +564,15 @@ impl BleSession {
 
     /// Writes a packet and collects the notifications it triggers.
     pub async fn exchange(&self, packet: &Packet, listen: Duration) -> Result<Vec<Vec<u8>>> {
-        let mut notifications = self.subscribe_commands().await?;
+        let mut slot = self.notification_stream().await?;
+        let notifications = slot
+            .as_mut()
+            .ok_or_else(|| anyhow!("notification stream is not open"))?;
         self.write_command(packet).await?;
-        let values = self.receive_values(&mut notifications, listen).await;
+        let values = receive_values(notifications, self.notification.uuid, listen).await;
+        drop(slot);
         self.ensure_link().await?;
         Ok(values)
-    }
-
-    /// Collects command notifications for a bounded amount of time.
-    pub async fn receive(&self, stream: &mut NotificationStream, listen: Duration) -> Vec<Vec<u8>> {
-        self.receive_values(stream, listen).await
-    }
-
-    async fn receive_values(
-        &self,
-        stream: &mut NotificationStream,
-        listen: Duration,
-    ) -> Vec<Vec<u8>> {
-        let deadline = Instant::now() + listen;
-        let mut values = Vec::new();
-
-        loop {
-            let now = Instant::now();
-            if now >= deadline {
-                break;
-            }
-
-            match tokio::time::timeout(deadline - now, stream.next()).await {
-                Ok(Some(notification)) => {
-                    if notification.uuid == self.notification.uuid {
-                        values.push(notification.value);
-                    }
-                }
-                Ok(None) | Err(_) => break,
-            }
-        }
-
-        values
     }
 
     pub async fn disconnect(&self) -> Result<()> {
@@ -509,6 +581,37 @@ impl BleSession {
             .await
             .context("failed to disconnect")
     }
+}
+
+/// Collects command notifications for a bounded amount of time.
+///
+/// Takes the open stream explicitly so both [`BleSession::sync`] and
+/// [`BleSession::exchange`] reuse the session subscription.
+async fn receive_values(
+    stream: &mut NotificationStream,
+    notification_uuid: Uuid,
+    listen: Duration,
+) -> Vec<Vec<u8>> {
+    let deadline = Instant::now() + listen;
+    let mut values = Vec::new();
+
+    loop {
+        let now = Instant::now();
+        if now >= deadline {
+            break;
+        }
+
+        match tokio::time::timeout(deadline - now, stream.next()).await {
+            Ok(Some(notification)) => {
+                if notification.uuid == notification_uuid {
+                    values.push(notification.value);
+                }
+            }
+            Ok(None) | Err(_) => break,
+        }
+    }
+
+    values
 }
 
 fn resolve(peripheral: &Peripheral, uuids: &UuidSet) -> Result<Resolved> {
@@ -553,17 +656,46 @@ async fn first_adapter() -> Result<Adapter> {
 }
 
 async fn ensure_powered(adapter: &Adapter) -> Result<()> {
-    use btleplug::api::CentralState;
+    poll_adapter_state(
+        || async {
+            adapter
+                .adapter_state()
+                .await
+                .context("failed to query adapter state")
+        },
+        ADAPTER_STATE_ATTEMPTS,
+        ADAPTER_STATE_DELAY,
+    )
+    .await
+}
 
-    match adapter
-        .adapter_state()
-        .await
-        .context("failed to query adapter state")?
-    {
-        CentralState::PoweredOn => Ok(()),
-        CentralState::PoweredOff => bail!("the Bluetooth adapter is powered off"),
-        CentralState::Unknown => bail!("the Bluetooth adapter state is unknown"),
+/// Polls the adapter until it is powered on.
+///
+/// Some backends report [`CentralState::Unknown`] for a short while after the
+/// adapter is initialised. A transient `Unknown` is retried; `PoweredOff` is
+/// still an immediate error, and a state that never settles gets a distinct
+/// message so the caller knows the difference.
+async fn poll_adapter_state<F, Fut>(mut query: F, attempts: u32, delay: Duration) -> Result<()>
+where
+    F: FnMut() -> Fut,
+    Fut: Future<Output = Result<CentralState>>,
+{
+    let attempts = attempts.max(1);
+
+    for attempt in 1..=attempts {
+        match query().await? {
+            CentralState::PoweredOn => return Ok(()),
+            CentralState::PoweredOff => bail!("the Bluetooth adapter is powered off"),
+            CentralState::Unknown => {
+                if attempt == attempts {
+                    bail!("the Bluetooth adapter state remained unknown after {attempts} attempts");
+                }
+                tokio::time::sleep(delay).await;
+            }
+        }
     }
+
+    unreachable!("the adapter state loop returns or fails on every attempt")
 }
 
 async fn find_peripheral(adapter: &Adapter, target: &str, timeout: Duration) -> Result<Peripheral> {
@@ -726,6 +858,182 @@ fn parse_uuid(value: &str, label: &str) -> Result<Uuid> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use futures::channel::mpsc;
+
+    const TEST_UUID: &str = "00001002-0000-1000-8000-00805f9b34fb";
+
+    fn notification(uuid: Uuid, value: Vec<u8>) -> ValueNotification {
+        ValueNotification {
+            uuid,
+            service_uuid: Uuid::nil(),
+            value,
+        }
+    }
+
+    #[tokio::test]
+    async fn reuses_the_same_notification_stream_across_receives() {
+        let uuid = Uuid::parse_str(TEST_UUID).unwrap();
+        let (sender, receiver) = mpsc::unbounded();
+        let mut stream: NotificationStream = Box::pin(receiver);
+
+        sender
+            .unbounded_send(notification(uuid, vec![0xFF, 0x03, 0x09, 0x01, 0x01]))
+            .unwrap();
+        let first = receive_values(&mut stream, uuid, Duration::from_millis(20)).await;
+
+        sender
+            .unbounded_send(notification(uuid, vec![0xFF, 0x03, 0x10, 0x01, 0x01]))
+            .unwrap();
+        let second = receive_values(&mut stream, uuid, Duration::from_millis(20)).await;
+
+        assert_eq!(first, vec![vec![0xFF, 0x03, 0x09, 0x01, 0x01]]);
+        assert_eq!(second, vec![vec![0xFF, 0x03, 0x10, 0x01, 0x01]]);
+    }
+
+    #[tokio::test]
+    async fn ignores_notifications_from_other_characteristics() {
+        let uuid = Uuid::parse_str(TEST_UUID).unwrap();
+        let (sender, receiver) = mpsc::unbounded();
+        let mut stream: NotificationStream = Box::pin(receiver);
+
+        sender
+            .unbounded_send(notification(Uuid::nil(), vec![0x01]))
+            .unwrap();
+        sender
+            .unbounded_send(notification(uuid, vec![0xFF, 0x03, 0x09, 0x01, 0x02]))
+            .unwrap();
+
+        let values = receive_values(&mut stream, uuid, Duration::from_millis(20)).await;
+
+        assert_eq!(values, vec![vec![0xFF, 0x03, 0x09, 0x01, 0x02]]);
+    }
+
+    /// Builds one composite notification carrying a block for each target.
+    fn query_responses(targets: &[Opcode]) -> Vec<u8> {
+        let mut bytes = vec![0xFF, 0x00];
+        for target in targets {
+            bytes.extend([target.as_u8(), 0x01, 0x00]);
+        }
+        bytes
+    }
+
+    #[test]
+    fn sync_stops_after_the_last_response_plus_grace() {
+        let now = Instant::now();
+        let deadline = now + Duration::from_millis(1500);
+        let mut tracker = QueryTracker::new(QUERY_TARGETS, SYNC_GRACE);
+
+        tracker.observe(
+            &query_responses(&QUERY_TARGETS),
+            now + Duration::from_millis(400),
+        );
+
+        assert_eq!(
+            tracker.stop_at(deadline),
+            now + Duration::from_millis(400) + SYNC_GRACE
+        );
+        assert!(tracker.stop_at(deadline) < deadline);
+    }
+
+    #[test]
+    fn sync_waits_for_the_full_window_when_a_response_is_missing() {
+        let now = Instant::now();
+        let deadline = now + Duration::from_millis(1500);
+        let mut tracker = QueryTracker::new(QUERY_TARGETS, SYNC_GRACE);
+
+        // Every target except the last one answers.
+        tracker.observe(
+            &query_responses(&QUERY_TARGETS[..QUERY_TARGETS.len() - 1]),
+            now + Duration::from_millis(400),
+        );
+
+        assert_eq!(tracker.stop_at(deadline), deadline);
+    }
+
+    #[test]
+    fn sync_starts_the_grace_period_only_after_all_targets_answer() {
+        let now = Instant::now();
+        let deadline = now + Duration::from_millis(1500);
+        let mut tracker = QueryTracker::new(QUERY_TARGETS, SYNC_GRACE);
+
+        tracker.observe(&query_responses(&QUERY_TARGETS[..1]), now);
+        assert_eq!(tracker.stop_at(deadline), deadline);
+
+        tracker.observe(
+            &query_responses(&QUERY_TARGETS[1..]),
+            now + Duration::from_millis(350),
+        );
+
+        assert_eq!(
+            tracker.stop_at(deadline),
+            now + Duration::from_millis(350) + SYNC_GRACE
+        );
+    }
+
+    #[tokio::test]
+    async fn retries_while_the_adapter_state_is_unknown() {
+        use std::collections::VecDeque;
+        use std::sync::{Arc, Mutex as StdMutex};
+
+        let states = Arc::new(StdMutex::new(VecDeque::from([
+            CentralState::Unknown,
+            CentralState::Unknown,
+            CentralState::PoweredOn,
+        ])));
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+
+        let result = poll_adapter_state(
+            || {
+                let states = states.clone();
+                let calls = calls.clone();
+                async move {
+                    calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    Ok(states.lock().unwrap().pop_front().expect("scripted state"))
+                }
+            },
+            5,
+            Duration::ZERO,
+        )
+        .await;
+
+        assert!(result.is_ok());
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 3);
+    }
+
+    #[tokio::test]
+    async fn powered_off_adapter_fails_without_retrying() {
+        use std::collections::VecDeque;
+        use std::sync::{Arc, Mutex as StdMutex};
+
+        let states = Arc::new(StdMutex::new(VecDeque::from([
+            CentralState::PoweredOff,
+            CentralState::PoweredOn,
+        ])));
+
+        let result = poll_adapter_state(
+            || {
+                let states = states.clone();
+                async move { Ok(states.lock().unwrap().pop_front().expect("scripted state")) }
+            },
+            5,
+            Duration::ZERO,
+        )
+        .await;
+
+        let error = result.unwrap_err();
+        assert!(error.to_string().contains("powered off"));
+        assert_eq!(states.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn unknown_adapter_state_reports_a_distinct_error() {
+        let result =
+            poll_adapter_state(|| async { Ok(CentralState::Unknown) }, 3, Duration::ZERO).await;
+
+        let error = result.unwrap_err();
+        assert!(error.to_string().contains("remained unknown"));
+    }
 
     #[test]
     fn normalizes_addresses_for_matching() {

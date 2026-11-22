@@ -796,7 +796,7 @@ documentação.
 | 0 | `main` | — | 12 | Implementado (e5c4d0e, 2026-11-19) |
 | 1 | `fix/robustez-gui` | 0 | 9 | Implementado (357c1f4, 2026-11-22) |
 | 2 | `refactor/controlador-transporte` | 1 | 4 | Implementado (0764928, 2026-11-22) |
-| 3 | `perf/sincronizacao-notificacoes` | 2 | 4 | Pendente |
+| 3 | `perf/sincronizacao-notificacoes` | 2 | 4 | Implementado (28963cd, 2026-11-22) |
 | 4 | `refactor/gui-modulos` | 1 | 3 | Pendente |
 | 5 | `feat/gui-tempo-real` | 2, 3, 4 | 2 | Pendente |
 | 6 | `feat/protocolo-hardware` | 0, 2 | 6 | Pendente |
@@ -916,6 +916,56 @@ Cada sessão adiciona aqui a subseção do lote concluído, antes do merge.
   - Recomendação para o Lote 2: mover `apply_command_result` e a política de
     link para o controlador compartilhado e cobrir queda de link com o dublê;
     no Lote 4, manter o bloqueio offline concentrado em um único ponto.
+
+#### Lote 3 — Sincronização e desempenho
+
+- **Status:** Implementado
+- **Branch:** `perf/sincronizacao-notificacoes`
+- **Commits:** `5ca768f` (REF-04), `47b293c` (REF-05), `1dc9961` (MEL-01),
+  `28963cd` (MEL-02)
+- **Validação:** gate completo na branch e na `main` (`cargo fmt --check`,
+  `cargo clippy --all-targets -- -D warnings`, `cargo test --all-targets` com
+  114 testes da lib + 26 da GUI + 6 de integração, `cargo build --release`).
+  Hardware: **não executado** — o fone configurado não respondeu (timeout de
+  conexão) e o pareado recusou a conexão (`br-connection-page-timeout`) durante
+  a sessão, então nenhuma medição BLE real foi feita.
+- **Medições:** o trecho de espera do `sync` foi medido com uma stream sintética
+  que responde aos 8 opcodes a cada 50 ms, usando a mesma lógica de encerramento
+  (`QueryTracker`) da produção: **1,50 s antes → 0,51 s depois** (≈66% menos no
+  trecho de espera). Projetando com as constantes do CLI (settle de 150 ms na
+  primeira subscrição e `--wait 1` para o eco):
+  - `device info`: ≈1,65 s → ≈0,66 s;
+  - ação comum (`device game on`): ≈2,80 s → ≈1,66 s;
+  - ação com `--no-sync`: ≈1,15 s (sem o sync inicial).
+  Não há perda de respostas: o encerramento só ocorre depois de todos os
+  opcodes consultados aparecerem, com 100 ms de tolerância; se algum não
+  responder, a janela completa é mantida.
+- **Notas:**
+  - REF-04 moveu a subscrição para um `tokio::sync::Mutex<Option<Stream>>`
+    dentro de `BleSession`. `sync` e `exchange` compartilham a mesma stream e o
+    settle de 150 ms é pago uma vez por sessão. `refresh` (chamado pela
+    reconexão) descarta a stream antiga, que é reaberta na próxima operação.
+  - `subscribe_commands` deixou de ser público. `device send` e
+    `device monitor` passaram a usar `receive()`/`next_notification()`, que
+    consomem a stream da sessão; o monitor continua encerrando no `Ctrl+C`.
+  - REF-05 adicionou `QueryTracker`, que remove cada opcode respondido do
+    conjunto de alvos e define o fim do sync em `última resposta + 100 ms`,
+    limitado à janela pedida. Respostas compostas são lidas bloco a bloco pelo
+    framing normal.
+  - MEL-01 expôs `Controller::connect_only` e a flag `--no-sync` em todas as
+    ações do CLI. O estado é limpo ao conectar sem sync e a saída mostra apenas
+    o que o comando devolver; comandos que reconectam (LDAC) ainda sincronizam
+    depois da reconexão, como antes.
+  - MEL-02 extraiu `poll_adapter_state`, que tenta 10 vezes com 100 ms entre
+    elas quando o adaptador reporta `Unknown`. `PoweredOff` continua falhando
+    na hora e o esgotamento tem mensagem própria ("remained unknown").
+  - Armadilha: os testes do tracker precisam montar a notificação composta com
+    um único cabeçalho `FF body_len` seguido dos blocos; repetir `FF` antes de
+    cada bloco faz o parser interpretar o byte como opcode.
+  - Dívidas: a validação com hardware segue pendente (PRO-03); a medição é
+    sintética porque o fone não estava acessível. O Lote 4 pode começar sem
+    depender deste lote, mas o Lote 5 (estado em tempo real) se beneficia da
+    stream persistente e deve reutilizá-la em vez de abrir outra subscrição.
 
 #### Lote 2 — Fundação compartilhada e testável
 

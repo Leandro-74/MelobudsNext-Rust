@@ -3,7 +3,6 @@ use std::time::Duration;
 
 use anyhow::{anyhow, Context, Result};
 use clap::{Args, Parser, Subcommand, ValueEnum};
-use futures::StreamExt;
 
 use melobudsnext::actions::{CommandObserver, CommandOptions, ConnectError, Controller};
 use melobudsnext::ble::{self, BleSession};
@@ -219,6 +218,10 @@ struct ActionArgs {
     /// Seconds to wait for command echoes (0 disables listening).
     #[arg(long, default_value_t = 1.0)]
     wait: f64,
+
+    /// Skip the initial state sync and send the command on a fresh session.
+    #[arg(long)]
+    no_sync: bool,
 
     /// Print the resulting state as JSON.
     #[arg(long)]
@@ -693,12 +696,22 @@ async fn run_action(
     let mut controller = Controller::new(config.uuids.clone(), Some(target.clone()));
     controller.set_scan_timeout(scan_timeout);
 
-    let mut warnings = match controller.connect_to(&target).await {
-        Ok(warnings) => warnings,
-        Err(ConnectError::Connect(error)) => {
-            return Err(error).with_context(|| format!("failed to connect to {target}"));
+    let mut warnings = if action.no_sync {
+        match controller.connect_only(&target).await {
+            Ok(()) => Vec::new(),
+            Err(ConnectError::Connect(error)) => {
+                return Err(error).with_context(|| format!("failed to connect to {target}"));
+            }
+            Err(ConnectError::Sync(error)) => return Err(error),
         }
-        Err(ConnectError::Sync(error)) => return Err(error),
+    } else {
+        match controller.connect_to(&target).await {
+            Ok(warnings) => warnings,
+            Err(ConnectError::Connect(error)) => {
+                return Err(error).with_context(|| format!("failed to connect to {target}"));
+            }
+            Err(ConnectError::Sync(error)) => return Err(error),
+        }
     };
 
     let device = controller.address().unwrap_or_else(|| target.clone());
@@ -843,11 +856,10 @@ async fn send_raw(
         return Ok(());
     }
 
-    let mut notifications = session.subscribe_commands().await?;
     session.write_raw_with(bytes, with_response).await?;
 
     let mut state = DeviceState::default();
-    for value in session.receive(&mut notifications, wait).await {
+    for value in session.receive(wait).await? {
         if !json {
             println!("rx: {}", hex::format(&value));
             print_notification(&value);
@@ -865,7 +877,6 @@ async fn send_raw(
 async fn monitor(address: Option<&str>, config_path: &Path, scan_timeout: Duration) -> Result<()> {
     let session = open_session(address, config_path, scan_timeout).await?;
     let notification_uuid = session.notification_uuid();
-    let mut notifications = session.subscribe_commands().await?;
 
     println!("Monitoring {} — press Ctrl+C to stop.", session.address());
 
@@ -877,8 +888,8 @@ async fn monitor(address: Option<&str>, config_path: &Path, scan_timeout: Durati
                 signal.context("failed to listen for Ctrl+C")?;
                 break;
             }
-            item = notifications.next() => {
-                match item {
+            item = session.next_notification() => {
+                match item? {
                     Some(notification) => {
                         if notification.uuid != notification_uuid {
                             continue;
