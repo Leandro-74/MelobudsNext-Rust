@@ -88,6 +88,52 @@ pub enum TransparencyMode {
     Intensity(u8),
 }
 
+/// Result reported by opcode `0x28` (`ANC Wear / Result`).
+///
+/// Firmware 2.0.6 sends a single-byte payload (`01`) after an ANC change. The
+/// meaning of the byte is not documented by the vendor, so the raw payload is
+/// preserved instead of being reduced to a guessed boolean. This keeps the
+/// decoding tolerant and lets a future capture reinterpret the value without
+/// losing information.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AncWearResult {
+    code: u8,
+    raw: Vec<u8>,
+}
+
+impl AncWearResult {
+    /// Parses the raw parameters of a `0x28` notification.
+    ///
+    /// Returns `None` when the notification carries no parameter at all.
+    pub fn parse(params: &[u8]) -> Option<Self> {
+        let (&code, _) = params.split_first()?;
+        Some(Self {
+            code,
+            raw: params.to_vec(),
+        })
+    }
+
+    /// First parameter byte, the only one observed so far.
+    pub const fn code(&self) -> u8 {
+        self.code
+    }
+
+    /// Complete payload, preserved for future captures.
+    pub fn raw(&self) -> &[u8] {
+        &self.raw
+    }
+}
+
+impl fmt::Display for AncWearResult {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "0x{:02X}", self.code)?;
+        if self.raw.len() > 1 {
+            write!(f, " ({} bytes)", self.raw.len())?;
+        }
+        Ok(())
+    }
+}
+
 /// Complete ANC/transparency state.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AncMode {
@@ -324,6 +370,21 @@ mod tests {
                 AncMode::Unknown(payload)
             );
         }
+    }
+
+    #[test]
+    fn parses_anc_wear_results_and_preserves_the_payload() {
+        let result = AncWearResult::parse(&[0x01]).unwrap();
+        assert_eq!(result.code(), 0x01);
+        assert_eq!(result.raw(), &[0x01]);
+        assert_eq!(result.to_string(), "0x01");
+
+        let longer = AncWearResult::parse(&[0x01, 0x00, 0x02]).unwrap();
+        assert_eq!(longer.code(), 0x01);
+        assert_eq!(longer.raw(), &[0x01, 0x00, 0x02]);
+        assert_eq!(longer.to_string(), "0x01 (3 bytes)");
+
+        assert_eq!(AncWearResult::parse(&[]), None);
     }
 
     #[test]

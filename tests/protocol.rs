@@ -125,6 +125,17 @@ fn applies_a_sequence_of_notifications_to_the_state() {
 }
 
 #[test]
+fn decodes_the_anc_wear_result_notification() {
+    let mut state = DeviceState::default();
+
+    let applied = state
+        .apply_bytes(&bytes("FF 03 28 01 01"))
+        .expect("ANC wear result");
+    assert_eq!(applied, 1);
+    assert_eq!(state.anc_wear.as_ref().map(|result| result.code()), Some(1));
+}
+
+#[test]
 fn parses_composite_notifications() {
     let mut state = DeviceState::default();
     let applied = state

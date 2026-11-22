@@ -3,7 +3,7 @@ use std::fmt;
 use serde::{Deserialize, Serialize};
 
 use crate::error::ProtocolError;
-use crate::protocol::anc::AncMode;
+use crate::protocol::anc::{AncMode, AncWearResult};
 use crate::protocol::commands::{NotificationVolume, WearDetection};
 use crate::protocol::framing::{self, Packet};
 use crate::protocol::opcode::Opcode;
@@ -20,6 +20,11 @@ pub struct DeviceState {
     pub sleep_mode: bool,
     pub channel_balance: u8,
     pub anc: AncMode,
+    /// Last `0x28` result reported by the firmware.
+    ///
+    /// The payload is notification-only; it does not replace [`Self::anc`].
+    #[serde(default)]
+    pub anc_wear: Option<AncWearResult>,
     pub name: Option<String>,
     pub notification_volume: Option<u8>,
     pub ldac: bool,
@@ -36,6 +41,7 @@ impl Default for DeviceState {
             sleep_mode: false,
             channel_balance: 50,
             anc: AncMode::Off,
+            anc_wear: None,
             name: None,
             notification_volume: None,
             ldac: false,
@@ -114,7 +120,14 @@ impl DeviceState {
                 }
                 None => false,
             },
-            Opcode::AncWear | Opcode::Battery | Opcode::Firmware | Opcode::Query => false,
+            Opcode::AncWear => match AncWearResult::parse(&packet.params) {
+                Some(result) => {
+                    self.anc_wear = Some(result);
+                    true
+                }
+                None => false,
+            },
+            Opcode::Battery | Opcode::Firmware | Opcode::Query => false,
         }
     }
 
@@ -148,6 +161,7 @@ impl fmt::Display for DeviceState {
         writeln!(f, "Sleep mode: {}", on_off(self.sleep_mode))?;
         writeln!(f, "Channel balance: {}", self.channel_balance)?;
         writeln!(f, "ANC: {}", self.anc)?;
+        writeln!(f, "ANC wear/result: {}", option(self.anc_wear.as_ref()))?;
         writeln!(f, "Name: {}", option(self.name.as_deref()))?;
         match self.notification_volume {
             Some(value) => writeln!(
@@ -254,7 +268,20 @@ mod tests {
     fn ignores_unknown_or_uninterpreted_packets() {
         let mut state = DeviceState::default();
         assert!(!state.apply(&Packet::new(0x42, [0x01])));
-        assert!(!state.apply(&Packet::new(0x28, [0x01, 0x02])));
+        assert!(!state.apply(&Packet::new(0x29, [0x01, 0x02])));
+    }
+
+    #[test]
+    fn applies_the_anc_wear_result_without_replacing_the_anc_state() {
+        let mut state = DeviceState::default();
+
+        assert!(state.apply(&Packet::new(0x28, [0x01])));
+        assert_eq!(state.anc_wear.as_ref().map(|result| result.code()), Some(1));
+        assert_eq!(state.anc_wear.as_ref().unwrap().raw(), &[0x01]);
+        assert_eq!(state.anc, AncMode::Off);
+
+        assert!(!state.apply(&Packet::new(0x28, Vec::new())));
+        assert_eq!(state.anc_wear.as_ref().map(|result| result.code()), Some(1));
     }
 
     #[test]

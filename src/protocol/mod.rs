@@ -10,7 +10,7 @@ pub mod opcode;
 pub mod readings;
 pub mod touch;
 
-pub use anc::{AncMode, AncScene, TransparencyMode};
+pub use anc::{AncMode, AncScene, AncWearResult, TransparencyMode};
 pub use commands::{NotificationVolume, WearDetection};
 pub use framing::Packet;
 pub use opcode::Opcode;
