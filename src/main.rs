@@ -3,7 +3,6 @@ use std::time::Duration;
 
 use anyhow::{anyhow, Context, Result};
 use clap::{Args, Parser, Subcommand, ValueEnum};
-use futures::StreamExt;
 
 use melobudsnext::actions::{CommandObserver, CommandOptions, ConnectError, Controller};
 use melobudsnext::ble::{self, BleSession};
@@ -843,11 +842,10 @@ async fn send_raw(
         return Ok(());
     }
 
-    let mut notifications = session.subscribe_commands().await?;
     session.write_raw_with(bytes, with_response).await?;
 
     let mut state = DeviceState::default();
-    for value in session.receive(&mut notifications, wait).await {
+    for value in session.receive(wait).await? {
         if !json {
             println!("rx: {}", hex::format(&value));
             print_notification(&value);
@@ -865,7 +863,6 @@ async fn send_raw(
 async fn monitor(address: Option<&str>, config_path: &Path, scan_timeout: Duration) -> Result<()> {
     let session = open_session(address, config_path, scan_timeout).await?;
     let notification_uuid = session.notification_uuid();
-    let mut notifications = session.subscribe_commands().await?;
 
     println!("Monitoring {} — press Ctrl+C to stop.", session.address());
 
@@ -877,8 +874,8 @@ async fn monitor(address: Option<&str>, config_path: &Path, scan_timeout: Durati
                 signal.context("failed to listen for Ctrl+C")?;
                 break;
             }
-            item = notifications.next() => {
-                match item {
+            item = session.next_notification() => {
+                match item? {
                     Some(notification) => {
                         if notification.uuid != notification_uuid {
                             continue;

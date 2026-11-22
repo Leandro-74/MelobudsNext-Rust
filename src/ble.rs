@@ -17,6 +17,7 @@ use btleplug::api::{
 use btleplug::platform::{Adapter, Manager, Peripheral};
 use futures::stream::Stream;
 use futures::StreamExt;
+use tokio::sync::Mutex;
 use tokio::time::Instant;
 use uuid::Uuid;
 
@@ -136,6 +137,12 @@ pub struct BleSession {
     battery: Option<Characteristic>,
     firmware: Option<Characteristic>,
     touch: Option<Characteristic>,
+    /// Notification stream kept open for the whole session.
+    ///
+    /// `btleplug` requires the stream to be polled mutably, so it lives behind
+    /// an async mutex shared by `sync` and `exchange`. The subscription is
+    /// dropped and reopened only when the link is rebuilt.
+    notifications: Mutex<Option<NotificationStream>>,
 }
 
 /// Characteristics resolved for a connected device.
@@ -189,6 +196,7 @@ impl BleSession {
                 battery: resolved.battery,
                 firmware: resolved.firmware,
                 touch: resolved.touch,
+                notifications: Mutex::new(None),
             }),
             Err(error) => {
                 let _ = peripheral.disconnect().await;
@@ -236,6 +244,9 @@ impl BleSession {
         self.battery = resolved.battery;
         self.firmware = resolved.firmware;
         self.touch = resolved.touch;
+        // The old subscription belongs to the previous link; reopen it lazily
+        // on the next notification-consuming operation.
+        *self.notifications.get_mut() = None;
         Ok(())
     }
 
@@ -367,19 +378,50 @@ impl BleSession {
             .context("failed to write touch mapping")
     }
 
-    /// Subscribes to command notifications and returns the notification stream.
-    pub async fn subscribe_commands(&self) -> Result<NotificationStream> {
-        self.peripheral
-            .subscribe(&self.notification)
-            .await
-            .context("failed to subscribe to command notifications")?;
-        let notifications = self
-            .peripheral
-            .notifications()
-            .await
-            .context("failed to open notification stream")?;
-        tokio::time::sleep(NOTIFICATION_SETTLE).await;
-        Ok(notifications)
+    /// Returns the session-wide notification stream, subscribing on first use.
+    ///
+    /// The subscription is kept open until [`BleSession::refresh`] rebuilds the
+    /// link, so commands and syncs no longer pay the settle delay every time.
+    async fn notification_stream(
+        &self,
+    ) -> Result<tokio::sync::MutexGuard<'_, Option<NotificationStream>>> {
+        let mut slot = self.notifications.lock().await;
+
+        if slot.is_none() {
+            self.peripheral
+                .subscribe(&self.notification)
+                .await
+                .context("failed to subscribe to command notifications")?;
+            let stream = self
+                .peripheral
+                .notifications()
+                .await
+                .context("failed to open notification stream")?;
+            tokio::time::sleep(NOTIFICATION_SETTLE).await;
+            *slot = Some(stream);
+        }
+
+        Ok(slot)
+    }
+
+    /// Waits for the next command notification on the persistent stream.
+    ///
+    /// Returns `None` when the backend closes the stream.
+    pub async fn next_notification(&self) -> Result<Option<ValueNotification>> {
+        let mut slot = self.notification_stream().await?;
+        let stream = slot
+            .as_mut()
+            .ok_or_else(|| anyhow!("notification stream is not open"))?;
+        Ok(stream.next().await)
+    }
+
+    /// Collects command notifications for `listen` using the session stream.
+    pub async fn receive(&self, listen: Duration) -> Result<Vec<Vec<u8>>> {
+        let mut slot = self.notification_stream().await?;
+        let stream = slot
+            .as_mut()
+            .ok_or_else(|| anyhow!("notification stream is not open"))?;
+        Ok(receive_values(stream, self.notification.uuid, listen).await)
     }
 
     /// Reads the direct characteristics, queries the remaining state and waits
@@ -413,7 +455,10 @@ impl BleSession {
             }
         }
 
-        let mut notifications = self.subscribe_commands().await?;
+        let mut slot = self.notification_stream().await?;
+        let notifications = slot
+            .as_mut()
+            .ok_or_else(|| anyhow!("notification stream is not open"))?;
         let deadline = Instant::now() + listen;
         let mut targets = QUERY_TARGETS.into_iter();
         let mut next_query = Instant::now();
@@ -464,43 +509,15 @@ impl BleSession {
 
     /// Writes a packet and collects the notifications it triggers.
     pub async fn exchange(&self, packet: &Packet, listen: Duration) -> Result<Vec<Vec<u8>>> {
-        let mut notifications = self.subscribe_commands().await?;
+        let mut slot = self.notification_stream().await?;
+        let notifications = slot
+            .as_mut()
+            .ok_or_else(|| anyhow!("notification stream is not open"))?;
         self.write_command(packet).await?;
-        let values = self.receive_values(&mut notifications, listen).await;
+        let values = receive_values(notifications, self.notification.uuid, listen).await;
+        drop(slot);
         self.ensure_link().await?;
         Ok(values)
-    }
-
-    /// Collects command notifications for a bounded amount of time.
-    pub async fn receive(&self, stream: &mut NotificationStream, listen: Duration) -> Vec<Vec<u8>> {
-        self.receive_values(stream, listen).await
-    }
-
-    async fn receive_values(
-        &self,
-        stream: &mut NotificationStream,
-        listen: Duration,
-    ) -> Vec<Vec<u8>> {
-        let deadline = Instant::now() + listen;
-        let mut values = Vec::new();
-
-        loop {
-            let now = Instant::now();
-            if now >= deadline {
-                break;
-            }
-
-            match tokio::time::timeout(deadline - now, stream.next()).await {
-                Ok(Some(notification)) => {
-                    if notification.uuid == self.notification.uuid {
-                        values.push(notification.value);
-                    }
-                }
-                Ok(None) | Err(_) => break,
-            }
-        }
-
-        values
     }
 
     pub async fn disconnect(&self) -> Result<()> {
@@ -509,6 +526,37 @@ impl BleSession {
             .await
             .context("failed to disconnect")
     }
+}
+
+/// Collects command notifications for a bounded amount of time.
+///
+/// Takes the open stream explicitly so both [`BleSession::sync`] and
+/// [`BleSession::exchange`] reuse the session subscription.
+async fn receive_values(
+    stream: &mut NotificationStream,
+    notification_uuid: Uuid,
+    listen: Duration,
+) -> Vec<Vec<u8>> {
+    let deadline = Instant::now() + listen;
+    let mut values = Vec::new();
+
+    loop {
+        let now = Instant::now();
+        if now >= deadline {
+            break;
+        }
+
+        match tokio::time::timeout(deadline - now, stream.next()).await {
+            Ok(Some(notification)) => {
+                if notification.uuid == notification_uuid {
+                    values.push(notification.value);
+                }
+            }
+            Ok(None) | Err(_) => break,
+        }
+    }
+
+    values
 }
 
 fn resolve(peripheral: &Peripheral, uuids: &UuidSet) -> Result<Resolved> {
@@ -726,6 +774,56 @@ fn parse_uuid(value: &str, label: &str) -> Result<Uuid> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use futures::channel::mpsc;
+
+    const TEST_UUID: &str = "00001002-0000-1000-8000-00805f9b34fb";
+
+    fn notification(uuid: Uuid, value: Vec<u8>) -> ValueNotification {
+        ValueNotification {
+            uuid,
+            service_uuid: Uuid::nil(),
+            value,
+        }
+    }
+
+    #[tokio::test]
+    async fn reuses_the_same_notification_stream_across_receives() {
+        let uuid = Uuid::parse_str(TEST_UUID).unwrap();
+        let (sender, receiver) = mpsc::unbounded();
+        let mut stream: NotificationStream = Box::pin(receiver);
+
+        sender
+            .unbounded_send(notification(uuid, vec![0xFF, 0x03, 0x09, 0x01, 0x01]))
+            .unwrap();
+        let first = receive_values(&mut stream, uuid, Duration::from_millis(20)).await;
+
+        sender
+            .unbounded_send(notification(uuid, vec![0xFF, 0x03, 0x10, 0x01, 0x01]))
+            .unwrap();
+        let second = receive_values(&mut stream, uuid, Duration::from_millis(20)).await;
+
+        assert_eq!(first, vec![vec![0xFF, 0x03, 0x09, 0x01, 0x01]]);
+        assert_eq!(second, vec![vec![0xFF, 0x03, 0x10, 0x01, 0x01]]);
+    }
+
+    #[tokio::test]
+    async fn ignores_notifications_from_other_characteristics() {
+        let uuid = Uuid::parse_str(TEST_UUID).unwrap();
+        let (sender, receiver) = mpsc::unbounded();
+        let mut stream: NotificationStream = Box::pin(receiver);
+
+        sender
+            .unbounded_send(notification(Uuid::nil(), vec![0x01]))
+            .unwrap();
+        sender
+            .unbounded_send(notification(uuid, vec![0xFF, 0x03, 0x09, 0x01, 0x02]))
+            .unwrap();
+
+        let values = receive_values(&mut stream, uuid, Duration::from_millis(20)).await;
+
+        assert_eq!(values, vec![vec![0xFF, 0x03, 0x09, 0x01, 0x02]]);
+    }
 
     #[test]
     fn normalizes_addresses_for_matching() {
