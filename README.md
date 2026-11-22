@@ -60,6 +60,9 @@ como `warning:` em vez de abortar.
 Cada ação abaixo sincroniza o estado, envia o comando, aplica os echos e imprime
 o estado resultante. `--wait SEGUNDOS` controla a espera pelos echos (padrão 1 s)
 e `--json` imprime apenas o JSON em `stdout` (mensagens vão para `stderr`).
+Com `--no-sync`, a conexão é aberta sem sincronizar o estado: o comando é
+enviado imediatamente e a saída mostra apenas os campos devolvidos pelo eco (ou
+pelo sync automático de um comando LDAC).
 
 | Comando | Efeito |
 | --- | --- |

@@ -335,6 +335,24 @@ impl Controller {
 
     /// Connects to `address`, keeps it as the target and synchronises the state.
     pub async fn connect_to(&mut self, address: &str) -> Result<Vec<String>, ConnectError> {
+        let report = self.open(address, true).await?;
+        Ok(report.map(|report| report.warnings).unwrap_or_default())
+    }
+
+    /// Connects without synchronising the state.
+    ///
+    /// Used by the CLI when `--no-sync` is requested: the command is sent on a
+    /// fresh session and only its echoes update the in-memory state.
+    pub async fn connect_only(&mut self, address: &str) -> Result<(), ConnectError> {
+        self.open(address, false).await?;
+        Ok(())
+    }
+
+    async fn open(
+        &mut self,
+        address: &str,
+        synchronise: bool,
+    ) -> Result<Option<SyncReport>, ConnectError> {
         self.target = Some(address.to_string());
 
         if let Some(client) = self.client.take() {
@@ -347,19 +365,26 @@ impl Controller {
             .await
             .map_err(ConnectError::Connect)?;
 
-        let report = match client.sync(SYNC_WINDOW).await {
-            Ok(report) => report,
-            Err(error) => {
-                let _ = client.disconnect().await;
-                return Err(ConnectError::Sync(error));
+        let report = if synchronise {
+            match client.sync(SYNC_WINDOW).await {
+                Ok(report) => Some(report),
+                Err(error) => {
+                    let _ = client.disconnect().await;
+                    return Err(ConnectError::Sync(error));
+                }
             }
+        } else {
+            None
         };
 
-        self.state = report.state;
+        self.state = report
+            .as_ref()
+            .map(|report| report.state.clone())
+            .unwrap_or_default();
         self.target = Some(client.address());
         self.client = Some(client);
 
-        Ok(report.warnings)
+        Ok(report)
     }
 
     /// Re-reads the state of the current link.
@@ -805,6 +830,33 @@ mod tests {
         assert!(!controller.is_connected());
         assert_eq!(controller.address().as_deref(), Some(ADDRESS));
         assert_eq!(transport.state().disconnect_calls, 1);
+    }
+
+    #[tokio::test]
+    async fn connects_without_synchronising_when_requested() {
+        let connector = FakeConnector::new();
+        let transport = FakeTransport::new(ADDRESS);
+        connector.push_ok(transport.clone());
+
+        let mut controller = controller(&connector);
+        controller.connect_only(ADDRESS).await.unwrap();
+
+        assert!(controller.is_connected());
+        assert_eq!(controller.address().as_deref(), Some(ADDRESS));
+        assert_eq!(transport.state().sync_calls, 0);
+        assert_eq!(controller.state(), &DeviceState::default());
+
+        transport.push_exchange(vec![vec![0xFF, 0x03, 0x09, 0x01, 0x01]]);
+        controller
+            .command(
+                &commands::game_mode(true),
+                &CommandOptions::cli(Duration::from_millis(10), false),
+            )
+            .await
+            .unwrap();
+
+        assert!(controller.state().game_mode);
+        assert_eq!(transport.state().exchange_calls, 1);
     }
 
     #[tokio::test]

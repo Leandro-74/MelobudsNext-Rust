@@ -219,6 +219,10 @@ struct ActionArgs {
     #[arg(long, default_value_t = 1.0)]
     wait: f64,
 
+    /// Skip the initial state sync and send the command on a fresh session.
+    #[arg(long)]
+    no_sync: bool,
+
     /// Print the resulting state as JSON.
     #[arg(long)]
     json: bool,
@@ -692,12 +696,22 @@ async fn run_action(
     let mut controller = Controller::new(config.uuids.clone(), Some(target.clone()));
     controller.set_scan_timeout(scan_timeout);
 
-    let mut warnings = match controller.connect_to(&target).await {
-        Ok(warnings) => warnings,
-        Err(ConnectError::Connect(error)) => {
-            return Err(error).with_context(|| format!("failed to connect to {target}"));
+    let mut warnings = if action.no_sync {
+        match controller.connect_only(&target).await {
+            Ok(()) => Vec::new(),
+            Err(ConnectError::Connect(error)) => {
+                return Err(error).with_context(|| format!("failed to connect to {target}"));
+            }
+            Err(ConnectError::Sync(error)) => return Err(error),
         }
-        Err(ConnectError::Sync(error)) => return Err(error),
+    } else {
+        match controller.connect_to(&target).await {
+            Ok(warnings) => warnings,
+            Err(ConnectError::Connect(error)) => {
+                return Err(error).with_context(|| format!("failed to connect to {target}"));
+            }
+            Err(ConnectError::Sync(error)) => return Err(error),
+        }
     };
 
     let device = controller.address().unwrap_or_else(|| target.clone());
