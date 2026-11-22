@@ -7,9 +7,85 @@ o estado sem precisar de interface gráfica. Também há uma GUI iced no binári
 
 O protocolo está documentado em [`PROTOCOLO_MelobudsNext.md`](PROTOCOLO_MelobudsNext.md).
 
-## Compilação
+## Requisitos
 
-Requisitos: Rust 1.85 ou superior e um adaptador Bluetooth.
+- Rust 1.85 ou superior (`rustup` é o caminho mais simples) e `cargo`.
+- Um adaptador Bluetooth acessível pelo sistema operacional.
+- Linux: BlueZ, D-Bus e as bibliotecas de desenvolvimento listadas abaixo.
+- Windows: a pilha Bluetooth do Windows 10/11 e uma toolchain compatível.
+
+### Linux (BlueZ/D-Bus)
+
+O `btleplug` conversa com o BlueZ pelo D-Bus do sistema. Instale o daemon, as
+ferramentas e as dependências de compilação, libere o adaptador e garanta que o
+seu usuário possa acessá-lo.
+
+Arch Linux:
+
+```sh
+sudo pacman -S --needed base-devel rust pkgconf dbus bluez bluez-utils \
+  libxkbcommon wayland
+sudo systemctl enable --now bluetooth
+sudo usermod -aG bluetooth "$USER"
+sudo rfkill unblock bluetooth
+bluetoothctl power on
+```
+
+Debian/Ubuntu:
+
+```sh
+sudo apt update
+sudo apt install build-essential pkg-config libdbus-1-dev \
+  libxkbcommon-dev libwayland-dev bluez
+sudo systemctl enable --now bluetooth
+sudo usermod -aG bluetooth "$USER"
+sudo rfkill unblock bluetooth
+bluetoothctl power on
+```
+
+Fedora:
+
+```sh
+sudo dnf install gcc pkgconf-pkg-config dbus-devel libxkbcommon-devel \
+  wayland-devel bluez
+sudo systemctl enable --now bluetooth
+sudo usermod -aG bluetooth "$USER"
+sudo rfkill unblock bluetooth
+bluetoothctl power on
+```
+
+Depois de `usermod`, saia da sessão e entre novamente para o grupo valer. As
+operações privilegiadas do BlueZ também podem pedir autorização pelo polkit;
+aceite o pedido ou configure a política para o seu usuário. `libxkbcommon` e
+`wayland` são necessários para compilar a GUI; quem usa só o CLI pode compilar
+com `--no-default-features` sem essas bibliotecas.
+
+Verificação rápida:
+
+```sh
+bluetoothctl show          # o controlador deve aparecer como "Powered: yes"
+rfkill list bluetooth      # não deve estar "Soft blocked: yes"
+```
+
+Se o fone estiver conectado ao celular ou ao app oficial, desconecte-o: ele
+aceita um host por vez.
+
+### Windows
+
+A toolchain padrão (`stable-x86_64-pc-windows-msvc`) precisa do Visual Studio
+Build Tools com a opção "Desenvolvimento para desktop com C++". Alternativa sem
+Visual Studio:
+
+```powershell
+rustup toolchain install stable-x86_64-pc-windows-gnu
+winget install BrechtSanders.WinLibs.POSIX.UCRT
+cargo +stable-x86_64-pc-windows-gnu build --release
+```
+
+O Windows 10/11 já traz a pilha Bluetooth; não é necessário instalar BlueZ. O
+adaptador precisa estar ligado e com o driver instalado.
+
+## Compilação
 
 ```sh
 cargo build --release
@@ -28,15 +104,52 @@ Nesse modo o binário `melobudsnext-gui` não é gerado e `cargo run --bin
 melobudsnext-gui` falha porque o alvo exige a feature. Os testes e o clippy
 podem ser executados da mesma forma com `--no-default-features`.
 
-No Windows, a toolchain padrão (`stable-x86_64-pc-windows-msvc`) precisa do
-Visual Studio Build Tools com a opção "Desenvolvimento para desktop com C++".
-Alternativa sem Visual Studio:
+Para gerar um pacote instalável no Arch Linux ou os artefatos de release para
+Linux e Windows, siga [`packaging/README.md`](packaging/README.md).
 
-```powershell
-rustup toolchain install stable-x86_64-pc-windows-gnu
-winget install BrechtSanders.WinLibs.POSIX.UCRT
-cargo +stable-x86_64-pc-windows-gnu build --release
+## Instalação
+
+### Arch Linux (AUR)
+
+Quando a release estiver publicada, instale pelo AUR com um helper
+(`yay -S melobudsnext` ou `paru -S melobudsnext`) ou manualmente:
+
+```sh
+git clone https://aur.archlinux.org/melobudsnext.git
+cd melobudsnext
+makepkg -si
 ```
+
+O PKGBUILD deste repositório fica em `packaging/aur` e pode ser testado
+localmente depois que a tag `vX.Y.Z` existir:
+
+```sh
+cd packaging/aur
+updpkgsums
+makepkg -si
+```
+
+### Artefatos de release
+
+Cada release publica um `.tar.gz` para Linux, um `.zip` para Windows e o arquivo
+`SHA256SUMS`. Confira o checksum antes de instalar:
+
+```sh
+cd dist
+sha256sum -c melobudsnext-<versão>-x86_64-unknown-linux-gnu.tar.gz.sha256
+tar -xzf melobudsnext-<versão>-x86_64-unknown-linux-gnu.tar.gz
+cd melobudsnext-<versão>-x86_64-unknown-linux-gnu
+sudo install -Dm755 melobudsnext /usr/local/bin/melobudsnext
+sudo install -Dm755 melobudsnext-gui /usr/local/bin/melobudsnext-gui
+sudo install -Dm644 melobudsnext.desktop \
+  /usr/local/share/applications/melobudsnext.desktop
+sudo install -Dm644 melobudsnext.svg \
+  /usr/local/share/icons/hicolor/scalable/apps/melobudsnext.svg
+```
+
+No Windows, extraia o `.zip` e execute `melobudsnext.exe` (CLI) ou
+`melobudsnext-gui.exe` (interface). O fluxo completo de geração dos artefatos e
+da tag está em [`packaging/README.md`](packaging/README.md).
 
 ## Primeira comunicação
 
@@ -152,13 +265,26 @@ gravar capturas), use:
 cargo run --bin melobudsnext-gui -- --offline
 ```
 
-`melobudsnext-gui --help` lista as flags disponíveis (`--offline`,
-`--config PATH`, `--reconnect-attempts` e `--reconnect-delay`) e `--version`
-imprime a versão do pacote. O mesmo modo offline pode ser ativado com
-`MELOBUDNEXT_GUI_OFFLINE=1` (valores como `true`, `yes` e `on` também ligam; `0`,
-`false`, `no`, `off` e vazio desligam). Nesse modo o botão de conexão e todos os
-controles que gravam no fone ficam desabilitados; os rascunhos locais (abas,
-sliders e seletores) continuam respondendo e o rodapé mostra um aviso.
+### Flags da interface gráfica
+
+`melobudsnext-gui --help` lista as opções e `melobudsnext-gui --version` imprime
+a versão do pacote. A tabela resume o comportamento:
+
+| Flag | Efeito |
+| --- | --- |
+| `--offline` | Abre a interface sem acessar o Bluetooth (demonstração e capturas). |
+| `--config PATH` | Usa outro arquivo de configuração; se não puder lê-lo, avisa no rodapé e segue com os padrões. |
+| `--reconnect-attempts N` | Tentativas de reconexão após o reinício do LDAC (padrão 10; mínimo 1). |
+| `--reconnect-delay SEGUNDOS` | Intervalo entre as tentativas (padrão 3; aceita 0 a 60). |
+| `--help` | Mostra a ajuda e sai. |
+| `--version` | Mostra a versão do pacote e sai. |
+
+O modo offline também pode ser ativado por `MELOBUDNEXT_GUI_OFFLINE=1`; a flag e
+a variável são combinadas com OU, ou seja, qualquer uma delas liga o modo.
+Valores como `true`, `yes` e `on` também ligam; `0`, `false`, `no`, `off` e vazio
+desligam. Nesse modo o botão de conexão e todos os controles que gravam no fone
+ficam desabilitados; os rascunhos locais (abas, sliders e seletores) continuam
+respondendo e o rodapé mostra um aviso.
 
 A janela tem tamanho fixo de 1200x800 (layout de dashboard) e usa o renderer
 **tiny-skia** (CPU). O wgpu não foi usado porque, neste ambiente, ele abria uma

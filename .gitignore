@@ -1,4 +1,5 @@
 /target
+/dist/
 
 # Local secrets (never commit real values; see AGENTS.md)
 .env

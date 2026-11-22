@@ -852,7 +852,7 @@ documentação.
 | 4 | `refactor/gui-modulos` | 1 | 3 | Implementado (0e73c22, 2026-11-22) |
 | 5 | `feat/gui-tempo-real` | 2, 3, 4 | 2 | Implementado (871a1bf, 2026-11-22) |
 | 6 | `feat/protocolo-hardware` | 0, 2 | 6 | Implementado (323e95f, 2026-11-22) |
-| 7 | `chore/docs-release` | todos | 4 | Pendente |
+| 7 | `chore/docs-release` | todos | 4 | Implementado (d0daecb, 2026-11-22) |
 
 > Total: 47 itens nos lotes planejados, mais o TST-08 (registrado durante o
 > Lote 1) e os itens descobertos no Lote 6 (COR-11, MEL-05 e PRO-05), todos
@@ -1217,6 +1217,51 @@ Cada sessão adiciona aqui a subseção do lote concluído, antes do merge.
     (DOC-01), os pré-requisitos de BLE no Linux (DOC-03), as flags da GUI
     (DOC-04) e o empacotamento (INF-05).
 
+#### Lote 7 — Documentação e entrega
+
+- **Status:** Implementado
+- **Branch:** `chore/docs-release`
+- **Commits:** `a8f93eb` (DOC-01), `d6d008f` (DOC-03), `0442157` (DOC-04),
+  `d0daecb` (INF-05)
+- **Validação:** gate completo na branch e na `main` (`cargo fmt --check`,
+  `cargo clippy --all-targets -- -D warnings`, `cargo test --all-targets` com
+  130 testes da lib + 36 da GUI + 8 de integração, `cargo build --release`).
+  Documentação: comandos de compilação e instalação seguidos a partir do README;
+  `desktop-file-validate` sem erros; PKGBUILD validado com
+  `makepkg --printsrcinfo`, pacote local gerado e extraído em um diretório
+  temporário com `melobudsnext --version` e `melobudsnext-gui --version` OK; o
+  `.tar.gz` de Linux foi gerado pelo script, o conteúdo conferido e o checksum
+  validado com `sha256sum -c`. Hardware: não aplicável. Windows: script não
+  executado (sem sessão Windows/pwsh).
+- **Notas:**
+  - DOC-01 separou o histórico do cliente Python do estado do port Rust na seção
+    11, com funcionalidades, validação, pendências atuais (COR-11, MEL-05,
+    PRO-05, captura de `0x2F`/`0x30` e Windows) e empacotamento. As seções
+    anteriores continuam descrevendo os bytes observados e a referência Python.
+  - DOC-03 adicionou requisitos por plataforma: BlueZ/D-Bus, `bluetoothctl`,
+    `rfkill`, grupo `bluetooth`/polkit e as dependências de build por distro
+    (Arch, Debian/Ubuntu e Fedora), incluindo a separação entre CLI e GUI.
+  - DOC-04 documentou `--offline`, `--config PATH`, `--reconnect-attempts`,
+    `--reconnect-delay`, `--help` e `--version`, além da combinação por OU entre
+    a flag `--offline` e `MELOBUDNEXT_GUI_OFFLINE`.
+  - INF-05 criou `packaging/aur/PKGBUILD` e `.SRCINFO`, o `.desktop`, o ícone, o
+    script de release de Linux, o script de release de Windows e o roteiro em
+    `packaging/README.md`. O pacote instala os dois binários, `.desktop`, ícone,
+    licença e documentação; `dist/` passou a ser ignorado.
+  - Armadilha: o `.sha256` gerado pelo script guarda apenas o nome do arquivo,
+    então `sha256sum -c` precisa rodar dentro de `dist/`; o comando do README foi
+    ajustado para isso.
+  - O `PKGBUILD` mantém `sha256sums=('SKIP')` enquanto a tag `vX.Y.Z` não
+    existe. Antes de enviar ao AUR, rode `updpkgsums` e regenere o `.SRCINFO`;
+    `SKIP` serve só para validar a receita localmente.
+  - Dívidas: a release não foi publicada (versão continua `0.1.0`), o AUR não foi
+    submetido, o artefato de Windows não foi gerado e o script PowerShell não foi
+    executado nesta sessão. A validação do pacote usou o `target/` local via
+    symlink, não uma compilação limpa em chroot.
+  - Recomendação: o checklist de release pode ser iniciado, mas decida o COR-11
+    antes de publicar, já que ele afeta uma ação documentada; valide o pacote em
+    uma máquina Arch limpa e teste o `.zip` de Windows em uma sessão real.
+
 ## Checklist de release (após o Lote 7)
 
 Pré-requisitos: Lotes 0–7 concluídos, `main` limpa, gate verde e limitações
@@ -1226,13 +1271,15 @@ conhecidas documentadas.
    hardware).
 2. Atualizar `Cargo.toml` + `Cargo.lock` e criar/atualizar `CHANGELOG.md`.
 3. Rodar o gate completo e gerar os binários com `cargo build --release`.
-4. Gerar artefatos: Linux x86_64 (`.tar.gz` com os dois binários e `.desktop`),
-   Windows x86_64 (`.zip`) e checksums SHA-256.
+4. Gerar artefatos com `packaging/linux/build-release.sh` e
+   `packaging/windows/build-release.ps1`: Linux x86_64 (`.tar.gz` com os dois
+   binários e `.desktop`), Windows x86_64 (`.zip`) e checksums SHA-256.
 5. Criar tag anotada `vX.Y.Z`.
 6. Publicar release no GitHub com notas e limitações conhecidas (ex.: `0x28`,
    estado ao vivo da GUI, firmware 2.0.6 e status da validação Linux).
 7. Push manual da `main` e da tag; depois `gh release create`.
-8. AUR/PKGBUILD como passo separado, se aplicável.
+8. Atualizar `packaging/aur` (`pkgver`, `updpkgsums` e `.SRCINFO`) e publicar no
+   AUR como passo separado. Consulte `packaging/README.md`.
 
 Não assinar código (não há certificado) e não publicar artefatos de plataformas
 não validadas (macOS).
