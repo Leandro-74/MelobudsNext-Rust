@@ -5,6 +5,7 @@ use anyhow::{anyhow, bail, Context, Result};
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use futures::StreamExt;
 
+use melobudsnext::actions::{CommandObserver, CommandOptions, ConnectError, Controller};
 use melobudsnext::ble::{self, BleSession};
 use melobudsnext::config::Config;
 use melobudsnext::hex;
@@ -646,9 +647,27 @@ async fn run_device(
     }
 }
 
-const SYNC_WINDOW: Duration = Duration::from_millis(1500);
-const RECONNECT_ATTEMPTS: u32 = 10;
-const RECONNECT_DELAY: Duration = Duration::from_secs(3);
+/// Prints command progress in the same order used before the shared controller.
+struct CliObserver {
+    json: bool,
+}
+
+impl CommandObserver for CliObserver {
+    fn notification(&mut self, value: &[u8]) {
+        if !self.json {
+            println!("rx: {}", hex::format(value));
+            print_notification(value);
+        }
+    }
+
+    fn reconnecting(&mut self) {
+        if self.json {
+            eprintln!("Reconnecting: the headphones restart when LDAC changes...");
+        } else {
+            println!("Reconnecting: the headphones restart when LDAC changes...");
+        }
+    }
+}
 
 /// Runs a command, applies its echoes to the live state and prints the result.
 ///
@@ -663,44 +682,48 @@ async fn run_action(
     scan_timeout: Duration,
 ) -> Result<()> {
     let wait = wait_duration(action.wait)?;
-    let mut session = open_session(address, config_path, scan_timeout).await?;
+    let config = Config::load_from(config_path)?;
+    let target = resolve_target(address, &config)?;
+    let mut controller = Controller::new(config.uuids.clone(), Some(target.clone()));
+    controller.set_scan_timeout(scan_timeout);
 
+    let mut warnings = match controller.connect_to(&target).await {
+        Ok(warnings) => warnings,
+        Err(ConnectError::Connect(error)) => {
+            return Err(error).with_context(|| format!("failed to connect to {target}"));
+        }
+        Err(ConnectError::Sync(error)) => return Err(error),
+    };
+
+    let device = controller.address().unwrap_or_else(|| target.clone());
     if action.json {
-        eprintln!("Device: {}", session.address());
+        eprintln!("Device: {device}");
     } else {
-        println!("Device: {}", session.address());
+        println!("Device: {device}");
     }
 
-    let mut report = session.sync(SYNC_WINDOW).await?;
+    let mut observer = CliObserver { json: action.json };
+    let outcome = controller
+        .command_with(
+            &packet,
+            &CommandOptions::cli(wait, reconnect),
+            &mut observer,
+        )
+        .await?;
 
-    for value in session.exchange(&packet, wait).await? {
-        if !action.json {
-            println!("rx: {}", hex::format(&value));
-            print_notification(&value);
-        }
-        if let Err(error) = report.state.apply_bytes(&value) {
-            report
-                .warnings
-                .push(format!("notification {}: {error}", hex::format(&value)));
-        }
+    if outcome.reconnected {
+        // The pre-reconnection warnings are superseded by the fresh sync.
+        warnings = outcome.warnings;
+    } else {
+        warnings.extend(outcome.warnings);
     }
 
-    if reconnect {
-        if action.json {
-            eprintln!("Reconnecting: the headphones restart when LDAC changes...");
-        } else {
-            println!("Reconnecting: the headphones restart when LDAC changes...");
-        }
-        session
-            .reconnect(RECONNECT_ATTEMPTS, RECONNECT_DELAY)
-            .await?;
-        report = session.sync(SYNC_WINDOW.max(wait)).await?;
+    print_warnings(&warnings);
+    print_state(controller.state(), action.json)?;
+
+    if let Err(error) = controller.disconnect().await {
+        eprintln!("warning: failed to disconnect: {error:#}");
     }
-
-    print_warnings(&report.warnings);
-    print_state(&report.state, action.json)?;
-
-    close(session).await;
     Ok(())
 }
 
@@ -719,18 +742,22 @@ fn print_state(state: &DeviceState, json: bool) -> Result<()> {
     Ok(())
 }
 
+fn resolve_target(address: Option<&str>, config: &Config) -> Result<String> {
+    match address {
+        Some(address) => Ok(address.to_string()),
+        None => config.mac_address.clone().ok_or_else(|| {
+            anyhow!("no device address; use --address or run `config set-mac <MAC>`")
+        }),
+    }
+}
+
 async fn open_session(
     address: Option<&str>,
     config_path: &Path,
     scan_timeout: Duration,
 ) -> Result<BleSession> {
     let config = Config::load_from(config_path)?;
-    let target = match address {
-        Some(address) => address.to_string(),
-        None => config.mac_address.clone().ok_or_else(|| {
-            anyhow!("no device address; use --address or run `config set-mac <MAC>`")
-        })?,
-    };
+    let target = resolve_target(address, &config)?;
 
     BleSession::connect(&target, &config.uuids, scan_timeout)
         .await

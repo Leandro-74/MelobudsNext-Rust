@@ -2782,7 +2782,7 @@ mod tests {
 
     #[test]
     fn cor_04_lost_or_unknown_link_discards_the_session() {
-        use super::ble_task::discards_client;
+        use melobudsnext::actions::discards_client;
 
         assert!(discards_client(Some(false)));
         assert!(discards_client(None));
@@ -2791,9 +2791,11 @@ mod tests {
 
     #[test]
     fn cor_05_successful_toggle_survives_without_an_echo() {
-        use super::ble_task::{apply_command_result, ActionResult};
+        use melobudsnext::actions::apply_command_result;
         use melobudsnext::protocol::commands;
         use melobudsnext::DeviceState;
+
+        use super::ble_task::ActionResult;
 
         let mut app = online_app();
         let _ = super::update(&mut app, super::Message::ToggleGame(true));
