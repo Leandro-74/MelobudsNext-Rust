@@ -221,13 +221,26 @@ gravar capturas), use:
 cargo run --bin melobudsnext-gui -- --offline
 ```
 
-`melobudsnext-gui --help` lista as flags disponíveis (`--offline`,
-`--config PATH`, `--reconnect-attempts` e `--reconnect-delay`) e `--version`
-imprime a versão do pacote. O mesmo modo offline pode ser ativado com
-`MELOBUDNEXT_GUI_OFFLINE=1` (valores como `true`, `yes` e `on` também ligam; `0`,
-`false`, `no`, `off` e vazio desligam). Nesse modo o botão de conexão e todos os
-controles que gravam no fone ficam desabilitados; os rascunhos locais (abas,
-sliders e seletores) continuam respondendo e o rodapé mostra um aviso.
+### Flags da interface gráfica
+
+`melobudsnext-gui --help` lista as opções e `melobudsnext-gui --version` imprime
+a versão do pacote. A tabela resume o comportamento:
+
+| Flag | Efeito |
+| --- | --- |
+| `--offline` | Abre a interface sem acessar o Bluetooth (demonstração e capturas). |
+| `--config PATH` | Usa outro arquivo de configuração; se não puder lê-lo, avisa no rodapé e segue com os padrões. |
+| `--reconnect-attempts N` | Tentativas de reconexão após o reinício do LDAC (padrão 10; mínimo 1). |
+| `--reconnect-delay SEGUNDOS` | Intervalo entre as tentativas (padrão 3; aceita 0 a 60). |
+| `--help` | Mostra a ajuda e sai. |
+| `--version` | Mostra a versão do pacote e sai. |
+
+O modo offline também pode ser ativado por `MELOBUDNEXT_GUI_OFFLINE=1`; a flag e
+a variável são combinadas com OU, ou seja, qualquer uma delas liga o modo.
+Valores como `true`, `yes` e `on` também ligam; `0`, `false`, `no`, `off` e vazio
+desligam. Nesse modo o botão de conexão e todos os controles que gravam no fone
+ficam desabilitados; os rascunhos locais (abas, sliders e seletores) continuam
+respondendo e o rodapé mostra um aviso.
 
 A janela tem tamanho fixo de 1200x800 (layout de dashboard) e usa o renderer
 **tiny-skia** (CPU). O wgpu não foi usado porque, neste ambiente, ele abria uma
