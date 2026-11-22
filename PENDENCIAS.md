@@ -67,6 +67,7 @@ Levantamento feito a partir da análise do repositório no commit `4028131`
 | TST-05 | Teste | P3 | Tolerância do framing a lixo/`body_len` não é explícita |
 | TST-06 | Teste | P1 | Regressões dos defeitos COR-* ainda não cobertas |
 | TST-07 | Teste | P3 | Sem checklist/script de validação com hardware |
+| TST-08 | Teste | P3 | Helpers de diretório temporário podem colidir |
 | DOC-01 | Documentação | P1 | Seção 11 do protocolo descreve pendências do projeto Python |
 | DOC-02 | Documentação | P2 | Exemplo composto contradiz `body_len` |
 | DOC-03 | Documentação | P2 | README não cobre pré-requisitos de BLE no Linux |
@@ -384,6 +385,21 @@ Levantamento feito a partir da análise do repositório no commit `4028131`
 - **Ação:** documentar um roteiro (conectar, sync, cada comando, reconexão LDAC,
   queda de link) para execução manual em Linux/Windows.
 - **Pronto quando:** o roteiro existir e citar resultados esperados.
+
+### TST-08 — Helpers de diretório temporário podem colidir
+- **Prioridade:** P3
+- **Onde:** `src/config.rs` (`temporary_directory`) e o helper equivalente em
+  `src/bin/gui.rs`
+- **Problema:** o nome do diretório temporário combina apenas
+  `SystemTime::now()` e o pid. Com testes em paralelo, duas chamadas no mesmo
+  instante podem escolher o mesmo caminho. Durante o Lote 1 uma execução falhou
+  em dois testes da configuração, sem reprodução em mais de 50 execuções
+  seguintes.
+- **Ação:** incluir um contador atômico no nome (ou usar `tempfile`), sem mudar
+  a lógica testada.
+- **Pronto quando:** execuções paralelas e repetidas nunca compartilharem o
+  diretório de trabalho.
+- **Observação:** descoberto no Lote 1; ainda sem lote atribuído.
 
 ---
 
@@ -778,7 +794,7 @@ documentação.
 | Lote | Branch | Depende de | Itens | Status |
 | --- | --- | --- | --- | --- |
 | 0 | `main` | — | 12 | Implementado (e5c4d0e, 2026-11-19) |
-| 1 | `fix/robustez-gui` | 0 | 9 | Pendente |
+| 1 | `fix/robustez-gui` | 0 | 9 | Implementado (357c1f4, 2026-11-22) |
 | 2 | `refactor/controlador-transporte` | 1 | 4 | Pendente |
 | 3 | `perf/sincronizacao-notificacoes` | 2 | 4 | Pendente |
 | 4 | `refactor/gui-modulos` | 1 | 3 | Pendente |
@@ -786,9 +802,10 @@ documentação.
 | 6 | `feat/protocolo-hardware` | 0, 2 | 6 | Pendente |
 | 7 | `chore/docs-release` | todos | 4 | Pendente |
 
-> Total: 44 itens. O lote 4 pode ser executado em paralelo ao 2/3 por não
-> compartilhar arquivos centrais, mas o merge deve seguir a ordem da tabela
-> para manter a `main` sempre estável.
+> Total: 44 itens nos lotes planejados, mais o TST-08 (registrado durante o
+> Lote 1 e ainda sem lote atribuído). O lote 4 pode ser executado em paralelo
+> ao 2/3 por não compartilhar arquivos centrais, mas o merge deve seguir a ordem
+> da tabela para manter a `main` sempre estável.
 
 ### Regra de promoção para a `main`
 
@@ -850,6 +867,55 @@ Cada sessão adiciona aqui a subseção do lote concluído, antes do merge.
   - Recomendação para o Lote 1: o parser de argumentos da GUI (COR-10) pode
     absorver `--offline` e a leitura de `MELOBUDNEXT_GUI_OFFLINE` em um único
     ponto.
+
+#### Lote 1 — Robustez da conexão e das ações da GUI
+
+- **Status:** Implementado
+- **Branch:** `fix/robustez-gui`
+- **Commits:** `ff79aef` (COR-10), `163bc7f` (IMP-02), `fc50f51` (COR-03),
+  `364403a` (COR-04), `7e390cd` (COR-05), `402ca85` (COR-06), `7192c1e`
+  (COR-07), `fda1b83` (TST-03), `357c1f4` (TST-06)
+- **Validação:** gate completo na branch e na `main` (`cargo fmt --check`,
+  `cargo clippy --all-targets -- -D warnings`, `cargo test --all-targets` com
+  70 testes unitários + 31 da GUI + 6 de integração, `cargo build --release`).
+  Manual: GUI aberta com `--offline --config <fictício>` em Arch Linux/KDE
+  Wayland; cabeçalho e pílula mostram "Offline", **Conectar** e **Aplicar**
+  desabilitados e o rodapé exibe o aviso. `--help` e `--version` conferidos.
+  Hardware: **não executado** — o fone pareado recusou conexão
+  (`br-connection-refused`) durante a sessão, então não foi possível desligá-lo
+  "durante o uso"; firmware não confirmado.
+- **Notas:**
+  - `Cli` (clap) centraliza `--offline`, `--config PATH`, `--help` e
+    `--version`; `MELOBUDNEXT_GUI_OFFLINE` continua valendo e é combinado com a
+    flag. `--config` alimenta `Config::load_from`, e um erro de leitura cai nos
+    padrões com aviso no rodapé.
+  - O modo offline é bloqueado em `update` (antes de qualquer mutação otimista)
+    e novamente em `dispatch` como defesa. `controls_enabled()` desabilita
+    botões e toggles de escrita; sliders, seletores e abas continuam locais.
+    `pick_list`/`slider` do iced 0.13 não têm estado desabilitado por item, por
+    isso o bloqueio efetivo fica no manipulador de mensagens.
+  - `BleSession::ensure_link` roda no início e no fim de `sync` e no fim de
+    `exchange`, porque a escrita pode "ter sucesso" com o link já morto. Em
+    caso de erro, `drop_client_if_link_lost` descarta o cliente quando a sonda
+    retorna `false` ou falha; a GUI passa a mostrar "Desconectado".
+  - O estado do comando é aplicado depois do sync de reconexão: ecos
+    reconhecidos continuam autoritativos; sem eco, o pacote enviado é aplicado
+    ao estado da sessão para o toggle não reverter (COR-05). Isso também vale
+    para o caminho LDAC, que reconecta antes de responder.
+  - ANC desconhecido ganhou `AncChoice::Unknown([u8; 3])`: aparece na aba com o
+    triplo em hexa, **Aplicar ANC** fica desabilitado e `active_anc_mode`
+    devolve erro em vez de enviar `Off`.
+  - Funções de toque desconhecidas são anexadas ao seletor como
+    `Desconhecida (0xXX)` e o byte original é preservado ao gravar o mapa.
+  - Armadilha: uma execução da suíte falhou em dois testes da configuração sem
+    reprodução em mais de 50 execuções; a suspeita é colisão do diretório
+    temporário dos testes, registrada como TST-08.
+  - Dívidas: sem dublê de transporte (REF-03/Lote 2), a regressão de COR-04
+    cobre a política de descarte, não o fluxo completo de sessão; a validação
+    com o fone desligado em uso fica pendente de hardware disponível.
+  - Recomendação para o Lote 2: mover `apply_command_result` e a política de
+    link para o controlador compartilhado e cobrir queda de link com o dublê;
+    no Lote 4, manter o bloqueio offline concentrado em um único ponto.
 
 ## Checklist de release (após o Lote 7)
 
