@@ -461,16 +461,73 @@ validação dos opcodes.
 
 ---
 
-## 11. Estado atual e próximos passos
+## 11. Estado atual do port Rust
 
-> Esta seção descreve o projeto Python de referência. O port Rust já possui
-> testes automatizados, validação em Linux e decodificação de `0x28`; a
-> reescrita desta seção para o estado atual do Rust está no Lote 7 (DOC-01).
+As seções anteriores documentam o protocolo observado no cliente Python de
+referência (versão 1.1.0) e continuam sendo a fonte dos bytes. Esta seção
+descreve o estado do port em Rust deste repositório, para que itens já
+resolvidos aqui não sejam confundidos com o histórico do Python.
 
-Pendências declaradas no README:
+### 11.1 Funcionalidades implementadas
 
-- Explorar o auto-desligar e os opcodes desconhecidos.
-- Decodificar o opcode `0x28`.
-- Criar testes automatizados de parse e montagem de pacotes.
-- Testar no Linux, já que a validação foi feita somente no Windows.
-- Empacotar como `.exe` e para Arch Linux (já existe um PKGBUILD em `packaging/aur`).
+- **CLI `melobudsnext`**: descoberta, conexão, leitura de estado, ANC e
+  transparência, game mode, sleep mode, LDAC, renomear, balanço, volume de
+  notificação, detecção de uso, mapa de toque, consulta `0xFE`, envio de bytes
+  crus, `inspect`, `monitor` e os comandos de teste sem o fone (`build`,
+  `decode`, `battery`, `firmware` e `touch`).
+- **GUI `melobudsnext-gui`**: painel iced com abas de status, ANC, áudio, toque
+  e uso; modo offline, `--config PATH`, progresso de reconexão e atualização ao
+  vivo por notificações. A feature `gui` é opcional e pode ser desligada com
+  `--no-default-features`.
+- **Camada compartilhada**: `actions::Controller` e `actions::Transport`
+  concentram o fluxo `sync → enviar → aplicar ecos → reconectar`, usados pelo
+  CLI e pela GUI, com dublês de transporte nos testes.
+- **Protocolo tolerante**: valores desconhecidos são preservados; `0x28` é
+  exposto como `AncWearResult` sem substituir o estado de ANC; `0x2F`/`0x30`
+  são decodificados se aparecerem, embora o firmware 2.0.6 não os envie.
+- **Testes automatizados**: unitários da biblioteca, da GUI e de integração,
+  cobrindo framing, opcodes, ANC, toque, bateria, firmware, estado,
+  configuração, controlador e regressões dos defeitos corrigidos.
+
+### 11.2 Validação registrada
+
+A execução de referência está em 10.1: Arch Linux com BlueZ 5.88 e firmware
+2.0.6, em 2026-11-22. O roteiro manual fica em
+[`tests/manual/validacao-hardware.md`](tests/manual/validacao-hardware.md) e o
+resumo no README. A validação em Windows ainda não foi executada; a matriz da
+seção 8.1 lista apenas o que foi observado.
+
+### 11.3 Pendências atuais
+
+| Item | Situação |
+| --- | --- |
+| `COR-11` | O LDAC aplica o valor, mas o firmware 2.0.6 derruba o link antes do fim do comando; o port ainda reporta erro em vez de concluir a reconexão. |
+| `MEL-05` | Ecos de `0x10`, `0x16`, `0x1D` e `0x2C` podem chegar depois da janela do comando, deixando a saída uma ação atrasada. |
+| `PRO-05` | O quarto byte do `0x2C` varia (`00`, `A0`, `5D`) e ainda não foi identificado; não deve ser tratado como configuração confirmada. |
+| Captura de `0x2F`/`0x30` | Os decodificadores existem, mas os opcodes nunca foram observados no firmware 2.0.6. |
+| Windows | Compila pela CI, mas o fluxo BLE real não foi validado no dispositivo. |
+
+As pendências detalhadas, com prioridade e critério de conclusão, ficam em
+[`PENDENCIAS.md`](PENDENCIAS.md).
+
+### 11.4 Histórico do cliente Python
+
+Pendências declaradas no README do projeto Python e como estão no port Rust:
+
+| Pendência original | Situação no Rust |
+| --- | --- |
+| Explorar o auto-desligar e opcodes desconhecidos | `0x14` documentado em 7.10; `0x06`, `0x29`, `0x2F` e `0x30` registrados em 4.3. Nenhum comando novo foi implementado. |
+| Decodificar o opcode `0x28` | Implementado: `AncWearResult` preserva o payload cru (7.11). |
+| Criar testes automatizados de parse e montagem | Implementado na suíte da biblioteca e nos testes de integração. |
+| Testar no Linux | Implementado e registrado em 10.1 (Arch Linux, firmware 2.0.6). |
+| Empacotar como `.exe` e para Arch Linux | Artefatos preparados em `packaging/` (PKGBUILD, `.desktop` e fluxo de release); a publicação da release é um passo manual do checklist em `PENDENCIAS.md`. |
+
+### 11.5 Empacotamento e release
+
+O diretório [`packaging/`](packaging/) contém o `PKGBUILD` do Arch Linux, o
+arquivo `.desktop` e o roteiro de release para Linux e Windows. O PKGBUILD
+compila a partir do tarball da tag `vX.Y.Z` e instala os dois binários, o ícone,
+o `.desktop` e a licença. O fluxo completo, incluindo checksums e atualização do
+AUR, está em [`packaging/README.md`](packaging/README.md); o checklist de
+release fica em `PENDENCIAS.md`. A publicação (tag, GitHub Releases e AUR) não
+faz parte deste documento e é feita manualmente.
