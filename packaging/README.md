@@ -173,12 +173,24 @@ repositório + `makepkg`.
 ## Ordem de publicação (manual)
 
 1. Fazer o merge do lote de release e repetir o gate na `main`.
-2. Criar a tag anotada e enviar `main` + tag.
-3. Gerar os artefatos e o `SHA256SUMS`.
-4. Criar a release no GitHub com os binários, os checksums e as limitações
-   conhecidas (`0x28`, firmware 2.0.6, COR-11/MEL-05/PRO-05 e status da
-   validação em Linux/Windows).
-5. Atualizar o AUR como descrito acima.
+2. Enviar `main` e a tag anotada (`git push origin main v0.2.0`).
+3. Gerar os artefatos e o `SHA256SUMS` (`dist/`).
+4. Criar a release no GitHub com os binários, os checksums, as notas e as
+   limitações conhecidas (`0x28`, firmware 2.0.6, MEL-05/PRO-05 e status da
+   validação em Linux/Windows):
+
+   ```sh
+   gh release create v0.2.0 \
+     dist/melobudsnext-0.2.0-x86_64-unknown-linux-gnu.tar.gz \
+     dist/melobudsnext-0.2.0-x86_64-unknown-linux-gnu.tar.gz.sha256 \
+     dist/melobudsnext-gui.exe \
+     dist/melobudsnext-gui.exe.sha256 \
+     dist/SHA256SUMS \
+     --title "MelobudsNext 0.2.0" \
+     --notes-file dist/release-notes.md
+   ```
+
+5. Atualizar o AUR como descrito acima (depois do `updpkgsums`).
 
 Não publique artefatos de plataformas não validadas nem faça push automático: o
 push e a publicação são passos manuais do usuário.
