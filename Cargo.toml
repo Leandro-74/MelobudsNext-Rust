@@ -7,12 +7,16 @@ default-run = "melobudsnext"
 description = "Cross-platform control tool for the QCY Melobuds Pro BLE protocol"
 license = "MIT"
 
+[features]
+default = ["gui"]
+gui = ["dep:iced"]
+
 [dependencies]
 anyhow = "1"
 btleplug = "0.13.5"
 clap = { version = "4", features = ["derive"] }
 futures = "0.3"
-iced = { version = "0.13.1", default-features = false, features = ["tokio", "tiny-skia", "fira-sans", "svg"] }
+iced = { version = "0.13.1", optional = true, default-features = false, features = ["tokio", "tiny-skia", "fira-sans", "svg"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
@@ -22,6 +26,7 @@ uuid = "1"
 [[bin]]
 name = "melobudsnext-gui"
 path = "src/bin/gui.rs"
+required-features = ["gui"]
 
 [profile.release]
 lto = "thin"

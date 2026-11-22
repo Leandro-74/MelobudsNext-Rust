@@ -15,6 +15,19 @@ Requisitos: Rust 1.85 ou superior e um adaptador Bluetooth.
 cargo build --release
 ```
 
+Por padrão são gerados os dois binários: `melobudsnext` (CLI) e
+`melobudsnext-gui` (interface iced). A GUI fica atrás da feature `gui`, que vem
+ligada por padrão. Para compilar apenas o CLI, sem baixar nem compilar o `iced`:
+
+```sh
+cargo build --no-default-features
+cargo build --no-default-features --release
+```
+
+Nesse modo o binário `melobudsnext-gui` não é gerado e `cargo run --bin
+melobudsnext-gui` falha porque o alvo exige a feature. Os testes e o clippy
+podem ser executados da mesma forma com `--no-default-features`.
+
 No Windows, a toolchain padrão (`stable-x86_64-pc-windows-msvc`) precisa do
 Visual Studio Build Tools com a opção "Desenvolvimento para desktop com C++".
 Alternativa sem Visual Studio:
