@@ -950,7 +950,7 @@ testados e publicáveis no GitHub Releases; o AUR fica para uma etapa posterior.
 | 6 | `feat/protocolo-hardware` | 0, 2 | 6 | Implementado (323e95f, 2026-11-22) |
 | 7 | `chore/docs-release` | todos | 4 | Implementado (d0daecb, 2026-11-22) |
 | 8 | `fix/ldac-reconexao` | 1, 2, 6 | 2 | Implementado (d4d85df, 2026-11-22) |
-| 9 | `chore/distribuicao` | 7, 8 | 2 | Pendente |
+| 9 | `chore/distribuicao` | 7, 8 | 2 | Em andamento |
 
 > Total: 48 itens nos lotes planejados (44 originais, mais COR-11 e COR-12 no
 > Lote 8 e INF-06/INF-07 no Lote 9), mais TST-08, MEL-05 e PRO-05, ainda sem
