@@ -48,7 +48,10 @@ O script imprime o SHA-256 e grava o arquivo `.sha256` ao lado do `.tar.gz`.
 
 O artefato de Windows é um único `melobudsnext-gui.exe`, compilado com CRT
 estático (`-C target-feature=+crt-static`), então **não** é necessário instalar o
-Visual C++ Redistributable. Os assets da GUI ficam embutidos no binário.
+Visual C++ Redistributable. Os assets da GUI ficam embutidos no binário e o ícone
+`assets/melobudsnext.ico` é gravado no executável por `build.rs`
+(`winresource`), então ele aparece no Explorer, na barra de tarefas e no
+Alt+Tab.
 
 Em um Windows com a toolchain MSVC:
 
