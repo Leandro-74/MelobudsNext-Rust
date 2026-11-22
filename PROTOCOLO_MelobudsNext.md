@@ -397,6 +397,27 @@ Estas são divergências em relação ao protocolo padrão da QCY, observadas no
 5. O opcode `0x28` (ANC Wear/Result) é recebido depois de mudanças de ANC; o payload é preservado (seção 7.11).
 6. Bateria e versão via comando (`0x2F`/`0x30`) não foram observadas; as consultas `0xFE` para esses opcodes ficam sem resposta.
 
+### 8.1 Matriz de compatibilidade por firmware
+
+A matriz registra o que foi efetivamente observado. Uma linha marcada como
+"não reproduzido" vem de relato de terceiros e não deve ser tratada como
+validação deste projeto.
+
+| Versão | Origem | `0x17` (ANC) | `0x28` | `0x2F`/`0x30` | Toque `0x0B` | Detecção de uso | Status |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 2.0.6 | captura local (Linux, 2026-11-22) | envia `00 00 00`; reporta `02 00 00` como desligado | notifica `FF 03 28 01 01` após mudança | não notifica; `0xFE` sem resposta | Modo ANC | reporta 4 bytes (`FF 06 2C 04 ...`) | Validado |
+| 2.0.4 | relato de terceiros (`qcy-control-macos`, não reproduzido) | exemplos usam `02 00 00` para desligado | não informado | não informado | não informado | não informado | Não validado |
+| outras | — | — | — | — | — | — | Desconhecido |
+
+Regras para atualizar a matriz:
+
+- uma linha nova só entra como "Validado" com captura ou teste registrado na
+  mesma entrega;
+- divergências de firmware devem ser descritas no comportamento do opcode, não
+  codificadas como identidade de um aparelho;
+- se um firmware novo mudar um formato, o parser deve continuar tolerante e
+  preservar o valor desconhecido.
+
 ---
 
 ## 9. Fluxo típico de uma sessão
