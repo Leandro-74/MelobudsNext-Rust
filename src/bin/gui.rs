@@ -2535,14 +2535,16 @@ mod tests {
         use melobudsnext::protocol::touch::{TouchFunction, TouchKey, TouchMapping};
         use melobudsnext::DeviceState;
 
-        let mut state = DeviceState::default();
-        state.anc = AncMode::anc(AncScene::Indoor, Some(2)).unwrap();
-        state.channel_balance = 30;
-        state.game_mode = true;
-        state.name = Some("Meu Fone".to_string());
         let mut touch = TouchMapping::new();
         touch.set(TouchKey::LeftSingle, TouchFunction::PlayPause);
-        state.touch = Some(touch);
+        let state = DeviceState {
+            anc: AncMode::anc(AncScene::Indoor, Some(2)).unwrap(),
+            channel_balance: 30,
+            game_mode: true,
+            name: Some("Meu Fone".to_string()),
+            touch: Some(touch),
+            ..DeviceState::default()
+        };
 
         let mut app = online_app();
         app.busy = Some("Sincronizando estado…".to_string());
@@ -2752,5 +2754,124 @@ mod tests {
         let (offline, _) = super::App::build(config, None, true);
         assert!(offline.busy.is_none());
         assert_eq!(offline.address_input, "AA:BB:CC:DD:EE:FF");
+    }
+
+    // -----------------------------------------------------------------------
+    // TST-06 — regressões de COR-03..07 e COR-10
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn cor_03_offline_actions_never_reach_the_session() {
+        use super::{view, Message, Tab};
+
+        let mut app = offline_app();
+        app.notice = None;
+
+        for action in [Message::ApplyAnc, Message::ApplyTouch, Message::ApplyWear] {
+            let _ = super::update(&mut app, action);
+            assert!(app.busy.is_none());
+            assert!(app.notice.is_some());
+        }
+
+        // The whole layout must still render without a BLE session.
+        for tab in Tab::ALL {
+            app.tab = tab;
+            let _ = view(&app);
+        }
+    }
+
+    #[test]
+    fn cor_04_lost_or_unknown_link_discards_the_session() {
+        use super::ble_task::discards_client;
+
+        assert!(discards_client(Some(false)));
+        assert!(discards_client(None));
+        assert!(!discards_client(Some(true)));
+    }
+
+    #[test]
+    fn cor_05_successful_toggle_survives_without_an_echo() {
+        use super::ble_task::{apply_command_result, ActionResult};
+        use melobudsnext::protocol::commands;
+        use melobudsnext::DeviceState;
+
+        let mut app = online_app();
+        let _ = super::update(&mut app, super::Message::ToggleGame(true));
+        assert!(app.state.game_mode);
+
+        // The session now applies the command itself because no echo arrived.
+        let mut session_state = DeviceState::default();
+        apply_command_result(&mut session_state, &commands::game_mode(true), &[]);
+
+        let _ = app.finish(ActionResult {
+            state: session_state,
+            connected: true,
+            notice: Some("Modo jogo ativado.".to_string()),
+            ..ActionResult::default()
+        });
+
+        assert!(app.state.game_mode, "the toggle must not revert");
+    }
+
+    #[test]
+    fn cor_06_unknown_anc_is_never_sent_as_off() {
+        use melobudsnext::protocol::anc::AncMode;
+
+        let mut app = online_app();
+        app.state.anc = AncMode::Unknown([0x01, 0x09, 0x00]);
+        app.load_drafts();
+
+        let _ = super::update(&mut app, super::Message::ApplyAnc);
+
+        assert!(app.busy.is_none(), "no BLE command must be dispatched");
+        assert!(app.error.is_some(), "the user must be told about the state");
+        assert_eq!(app.state.anc, AncMode::Unknown([0x01, 0x09, 0x00]));
+    }
+
+    #[test]
+    fn cor_07_unknown_touch_is_visible_and_preserved_on_save() {
+        use melobudsnext::protocol::touch::{TouchFunction, TouchKey, TouchMapping};
+
+        let mut app = online_app();
+        let mut touch = TouchMapping::new();
+        touch.set(TouchKey::LeftSingle, TouchFunction::Unknown(0x42));
+        app.state.touch = Some(touch);
+        app.load_drafts();
+
+        assert_eq!(
+            app.touch_draft.get(TouchKey::LeftSingle),
+            TouchFunction::Unknown(0x42)
+        );
+
+        let option = super::TouchOption::options(TouchFunction::Unknown(0x42))
+            .into_iter()
+            .find(|option| option.0 == TouchFunction::Unknown(0x42))
+            .expect("unknown value must be listed");
+        let _ = super::update(
+            &mut app,
+            super::Message::TouchChanged(TouchKey::LeftSingle, option),
+        );
+
+        // The draft keeps the original byte when the map is written back.
+        assert_eq!(app.touch_draft.encode()[1], 0x42);
+    }
+
+    #[test]
+    fn cor_10_help_and_version_cover_the_gui_flags() {
+        use clap::CommandFactory;
+
+        let mut command = Cli::command();
+        let help = command.render_help().to_string();
+
+        for flag in ["--offline", "--config"] {
+            assert!(help.contains(flag), "help was: {help}");
+        }
+
+        assert_eq!(
+            Cli::try_parse_from(["melobudsnext-gui", "--version"])
+                .unwrap_err()
+                .kind(),
+            clap::error::ErrorKind::DisplayVersion
+        );
     }
 }

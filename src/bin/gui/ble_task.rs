@@ -276,10 +276,9 @@ impl SessionInner {
 /// The client is dropped unless the peripheral explicitly confirms that the
 /// link is still up; an inconclusive probe is treated as a lost link so the UI
 /// never keeps showing "Conectado" for a session that cannot be used.
-fn discards_client(link_alive: Option<bool>) -> bool {
+pub(super) fn discards_client(link_alive: Option<bool>) -> bool {
     link_alive != Some(true)
 }
-
 /// Applies the notifications produced by a command to the state.
 ///
 /// Echoes are authoritative, but the firmware can stay silent when the value
