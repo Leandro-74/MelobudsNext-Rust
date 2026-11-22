@@ -80,6 +80,8 @@ Levantamento feito a partir da análise do repositório no commit `4028131`
 | INF-03 | Infraestrutura | P2 | Sem CI (fmt, clippy, testes, build) |
 | INF-04 | Infraestrutura | P3 | `iced` compilado mesmo para quem só usa o CLI |
 | INF-05 | Infraestrutura | P3 | Sem empacotamento (AUR, `.desktop`, release Windows) |
+| INF-06 | Infraestrutura | P2 | Instalação no Arch via `makepkg` antes do AUR |
+| INF-07 | Infraestrutura | P2 | Executável Windows único (GUI) com CRT estático |
 | PRO-01 | Protocolo/Hardware | P3 | Opcode `0x28` (ANC Wear) não decodificado |
 | PRO-02 | Protocolo/Hardware | P3 | Auto-desligar e opcodes desconhecidos não explorados |
 | PRO-03 | Protocolo/Hardware | P2 | Validação em Linux ainda não registrada |
@@ -535,6 +537,35 @@ Levantamento feito a partir da análise do repositório no commit `4028131`
 - **Pronto quando:** for possível instalar o pacote em Arch Linux e gerar o
   executável de Windows a partir do repositório.
 
+### INF-06 — Instalação no Arch via `makepkg` antes do AUR
+- **Prioridade:** P2
+- **Onde:** `packaging/aur/PKGBUILD`, `packaging/README.md`, `README.md`
+- **Problema:** enquanto o pacote não estiver no AUR, não há um fluxo publicado
+  e testado para o usuário instalar com `makepkg`; o `PKGBUILD` ainda aponta
+  para uma tag inexistente e usa `sha256sums=('SKIP')`.
+- **Ação:** depois de criar a tag `vX.Y.Z`, atualizar `pkgver`, gerar o
+  checksum real com `updpkgsums`, regenerar `.SRCINFO` e testar `makepkg -si`
+  em uma instalação Arch limpa (chroot ou VM). Distribuir o `PKGBUILD` no
+  repositório/release com instruções de clone + build; o AUR entra depois.
+- **Pronto quando:** um usuário Arch instalar o pacote apenas seguindo a
+  documentação, sem depender do AUR, e a instalação for validada em ambiente
+  limpo.
+
+### INF-07 — Executável Windows único (GUI) com CRT estático
+- **Prioridade:** P2
+- **Onde:** `packaging/windows/build-release.ps1`, `packaging/README.md`,
+  `README.md`
+- **Problema:** o script atual gera um `.zip` com os dois executáveis e o build
+  MSVC padrão depende do Visual C++ Redistributable. O objetivo é distribuir um
+  executável simples, sem instalador.
+- **Ação:** gerar `melobudsnext-gui.exe` com CRT estático
+  (`RUSTFLAGS="-C target-feature=+crt-static"` no alvo
+  `x86_64-pc-windows-msvc`), mantendo os assets embutidos; publicar o `.exe`
+  (ou um zip de um arquivo) com checksum e orientação sobre o aviso do
+  SmartScreen. O CLI pode continuar disponível via fonte ou em um zip opcional.
+- **Pronto quando:** o `.exe` abrir e conectar ao fone em um Windows real sem
+  instalar o Redistributable, com o fluxo documentado.
+
 ---
 
 ## Protocolo/Hardware
@@ -841,6 +872,53 @@ implementados ou explicitamente descartados.
 **Pronto quando:** um novo usuário conseguir compilar/instalar só pela
 documentação.
 
+### Lote 8 — Correção do LDAC (COR-11)
+
+**Branch:** `fix/ldac-reconexao`
+**Dependências:** Lotes 1, 2 e 6 (controlador, transporte e validação com
+hardware)
+**Arquivos principais:** `src/actions.rs`, `src/ble.rs`, `src/bin/gui/*`
+**Objetivo:** tratar a queda de link esperada do LDAC como parte da reconexão,
+sem reportar "BLE link lost" e sem mascarar quedas reais.
+
+| Item | Entrega |
+| --- | --- |
+| COR-11 | LDAC reconecta e exibe o estado final após o reinício do fone |
+
+**Critérios de implementação:**
+
+- distinguir queda de link **antes** da escrita (erro real) de queda **depois**
+  da escrita em comando que reinicia o fone (esperada);
+- manter a sessão para reconectar e aplicar o estado pós-reconexão;
+- não alterar o comportamento de comandos que não reconectam;
+- cobrir com dublê de transporte o caso em que a escrita acontece e o link cai
+  antes da coleta dos ecos.
+
+**Gate extra:** no fone (Linux, firmware 2.0.6), executar `device ldac off` e
+`device ldac on` com `--reconnect-attempts 3 --reconnect-delay 1`, confirmar a
+reconexão e o estado final, e testar o toggle LDAC na GUI. Registrar plataforma
+e firmware.
+**Pronto quando:** `device ldac` conclui sem erro de link perdido, o estado
+final corresponde ao valor aplicado e a regressão está coberta por teste.
+
+### Lote 9 — Distribuição (Arch via makepkg e Windows standalone)
+
+**Branch:** `chore/distribuicao`
+**Dependências:** Lotes 7 e 8
+**Arquivos principais:** `packaging/*`, `README.md`
+**Objetivo:** disponibilizar instalação no Arch por `makepkg` (sem AUR) e um
+executável Windows único.
+
+| Item | Entrega |
+| --- | --- |
+| INF-06 | Fluxo `makepkg` validado em Arch limpo, com checksum real e instruções |
+| INF-07 | `melobudsnext-gui.exe` único com CRT estático e checksum |
+
+**Gate extra:** instalar via `makepkg -si` em um Arch limpo e abrir o `.exe` em
+um Windows real, conectando ao fone.
+**Pronto quando:** os dois caminhos de instalação estiverem documentados,
+testados e publicáveis no GitHub Releases; o AUR fica para uma etapa posterior.
+
 ### Ordem, dependências e status
 
 | Lote | Branch | Depende de | Itens | Status |
@@ -853,12 +931,14 @@ documentação.
 | 5 | `feat/gui-tempo-real` | 2, 3, 4 | 2 | Implementado (871a1bf, 2026-11-22) |
 | 6 | `feat/protocolo-hardware` | 0, 2 | 6 | Implementado (323e95f, 2026-11-22) |
 | 7 | `chore/docs-release` | todos | 4 | Implementado (d0daecb, 2026-11-22) |
+| 8 | `fix/ldac-reconexao` | 1, 2, 6 | 1 | Pendente |
+| 9 | `chore/distribuicao` | 7, 8 | 2 | Pendente |
 
-> Total: 47 itens nos lotes planejados, mais o TST-08 (registrado durante o
-> Lote 1) e os itens descobertos no Lote 6 (COR-11, MEL-05 e PRO-05), todos
-> ainda sem lote atribuído. O lote 4 pode ser executado em paralelo ao 2/3 por
-> não compartilhar arquivos centrais, mas o merge deve seguir a ordem da tabela
-> para manter a `main` sempre estável.
+> Total: 47 itens nos lotes planejados (44 originais, mais COR-11 no Lote 8 e
+> INF-06/INF-07 no Lote 9), mais TST-08, MEL-05 e PRO-05, ainda sem lote
+> atribuído. O lote 4 pode ser executado em paralelo ao 2/3 por não compartilhar
+> arquivos centrais, mas o merge deve seguir a ordem da tabela para manter a
+> `main` sempre estável.
 
 ### Regra de promoção para a `main`
 
@@ -1262,24 +1342,30 @@ Cada sessão adiciona aqui a subseção do lote concluído, antes do merge.
     antes de publicar, já que ele afeta uma ação documentada; valide o pacote em
     uma máquina Arch limpa e teste o `.zip` de Windows em uma sessão real.
 
-## Checklist de release (após o Lote 7)
+## Checklist de release (após o Lote 9)
 
-Pré-requisitos: Lotes 0–7 concluídos, `main` limpa, gate verde e limitações
+Pré-requisitos: Lotes 0–9 concluídos, `main` limpa, gate verde e limitações
 conhecidas documentadas.
 
 1. Definir a versão (`0.2.0` por padrão; `1.0.0` apenas com PRO-03 validada em
    hardware).
 2. Atualizar `Cargo.toml` + `Cargo.lock` e criar/atualizar `CHANGELOG.md`.
 3. Rodar o gate completo e gerar os binários com `cargo build --release`.
-4. Gerar artefatos com `packaging/linux/build-release.sh` e
-   `packaging/windows/build-release.ps1`: Linux x86_64 (`.tar.gz` com os dois
-   binários e `.desktop`), Windows x86_64 (`.zip`) e checksums SHA-256.
-5. Criar tag anotada `vX.Y.Z`.
-6. Publicar release no GitHub com notas e limitações conhecidas (ex.: `0x28`,
-   estado ao vivo da GUI, firmware 2.0.6 e status da validação Linux).
-7. Push manual da `main` e da tag; depois `gh release create`.
-8. Atualizar `packaging/aur` (`pkgver`, `updpkgsums` e `.SRCINFO`) e publicar no
-   AUR como passo separado. Consulte `packaging/README.md`.
+4. Criar a tag anotada `vX.Y.Z` — o `PKGBUILD` e o script de Windows dependem
+   dela.
+5. **Arch (makepkg, sem AUR):** em `packaging/aur`, atualizar `pkgver`, rodar
+   `updpkgsums` para gerar o checksum real e regerar o `.SRCINFO`; testar
+   `makepkg -si` em um Arch limpo. Publicar o `PKGBUILD`/`.SRCINFO` no
+   repositório e anexar as instruções à release; o AUR entra depois.
+6. **Windows (executável único):** gerar `melobudsnext-gui.exe` com CRT estático
+   (`RUSTFLAGS="-C target-feature=+crt-static"` no alvo
+   `x86_64-pc-windows-msvc`), testar em um Windows real e gerar o SHA-256.
+   Opcional: um `.zip` com o CLI para quem quiser usar o terminal.
+7. Publicar a release no GitHub com o `.exe`, checksums, `PKGBUILD`, notas e
+   limitações conhecidas (MEL-05, PRO-05, firmware 2.0.6 e status da validação
+   Linux/Windows).
+8. Push manual da `main` e da tag; depois `gh release create`.
+9. AUR como etapa separada, quando houver disponibilidade.
 
 Não assinar código (não há certificado) e não publicar artefatos de plataformas
 não validadas (macOS).
