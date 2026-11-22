@@ -439,9 +439,33 @@ Regras para atualizar a matriz:
 - Só depois de validado, o mecanismo entra na ferramenta.
 - Divergências entre documentação de terceiros e os bytes observados são resolvidas a favor dos bytes.
 
+### 10.1 Registro de validação em Linux
+
+O roteiro está em
+[`tests/manual/validacao-hardware.md`](tests/manual/validacao-hardware.md).
+
+| Item | Registro |
+| --- | --- |
+| Data | 2026-11-22 |
+| Plataforma | Arch Linux, kernel `7.3.5-arch1-1` x86_64, Wayland/Hyprland, BlueZ 5.88 |
+| Firmware | 2.0.6 |
+| Conexão e sync | `device info`, `read battery`, `read firmware`, `read touch` OK |
+| Comandos | game, sleep, ANC (cenas, níveis, vento, adaptativo, transparência e desligado), balanço, volume, detecção de uso, rename e `send` OK |
+| Notificações | `0x28` observado após mudanças de ANC; `0x2F`/`0x30` não emitidos; `0x14` respondeu à consulta |
+| LDAC | valor aplicado, mas o comando terminou com "BLE link lost" (COR-11) |
+| GUI | `--offline --config <fictício>` abriu sem erro; a janela foi encerrada pelo timeout |
+
+O `device monitor` não encerrou sozinho quando o link foi derrubado por outro
+processo; ele ficou aguardando até o timeout do teste. Isso não impediu a
+validação dos opcodes.
+
 ---
 
 ## 11. Estado atual e próximos passos
+
+> Esta seção descreve o projeto Python de referência. O port Rust já possui
+> testes automatizados, validação em Linux e decodificação de `0x28`; a
+> reescrita desta seção para o estado atual do Rust está no Lote 7 (DOC-01).
 
 Pendências declaradas no README:
 

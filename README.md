@@ -64,6 +64,9 @@ cargo +stable-x86_64-pc-windows-gnu build --release
 
 `device info` lê bateria, firmware e touch diretamente e consulta ANC, game mode,
 sleep, nome, balanço, volume de notificação, LDAC e detecção de uso via `0xFE`.
+Quando o fone envia o resultado `0x28` depois de uma mudança de ANC, ele aparece
+como `ANC wear/result` (e como `anc_wear` no JSON); esse evento não substitui o
+estado de ANC.
 
 Se algum desses campos opcionais falhar, o comando continua e mostra o problema
 como `warning:` em vez de abortar.
@@ -184,6 +187,36 @@ cargo run -- touch encode --bind left-single=play-pause
 cargo run -- touch decode "01 01 02 03 03 00 04 00 05 00 06 00 07 00 08 00 00 00 00 00"
 ```
 
+## Validação em Linux
+
+O roteiro manual está em
+[`tests/manual/validacao-hardware.md`](tests/manual/validacao-hardware.md). Ele
+cobre descoberta, conexão, leituras diretas, comandos, notificações, LDAC,
+queda de link e a GUI, sempre sem registrar identificadores do fone.
+
+Execução registrada em **2026-11-22**:
+
+- **Plataforma:** Arch Linux, kernel `7.3.5-arch1-1` x86_64, sessão Wayland
+  (Hyprland), BlueZ 5.88.
+- **Firmware:** 2.0.6.
+- **CLI:** scan, `device info`, leituras de bateria/firmware/toque, game/sleep,
+  todas as cenas de ANC e transparência, balanço, volume de notificação,
+  detecção de uso, renomear (com restauração do nome), `query`, `send`,
+  `inspect` e `monitor` funcionaram.
+- **Notificações:** `0x28` foi capturado como `FF 03 28 01 01` depois de
+  mudanças de ANC; `0x2F`/`0x30` não foram emitidos e as consultas `0xFE` para
+  eles não responderam; `0x14` (auto-desligar) respondeu
+  `FF 06 14 04 FF FF 00 00`.
+- **GUI:** `--help`, `--version` e `--offline --config <fictício>` abriram sem
+  erro (a janela foi encerrada pelo timeout do teste).
+- **Limitações encontradas:** o comando LDAC aplica o valor, mas termina com
+  "BLE link lost" em vez de reconectar (COR-11); alguns ecos de estado chegam
+  depois da janela do comando (MEL-05); o `device monitor` continuou aberto
+  quando o link foi derrubado por outro processo.
+
+Para repetir a validação, siga o roteiro e registre plataforma, firmware e
+resultados sem dados sensíveis.
+
 ## Configuração
 
 O caminho padrão é `~/.melobudsnext/config.json` (ou `%USERPROFILE%\.melobudsnext\config.json`).
@@ -261,17 +294,25 @@ Python, faça uma cópia antes, porque ele espera a chave `address`.
 
 ## Limitações conhecidas
 
-- O opcode `0x28` (ANC Wear/Result) é reconhecido, mas o conteúdo ainda não é
-  decodificado; uma notificação que traga apenas esse opcode não altera o
-  estado.
-- Notificações `0x2F`/`0x30` (bateria/versão pelo canal de comando) não são
-  tratadas; o projeto usa as characteristics diretas para essas leituras.
+- O opcode `0x28` (ANC Wear/Result) é exibido como `ANC wear/result` e o payload
+  cru é preservado. O firmware 2.0.6 envia `01` depois de mudanças de ANC, mas o
+  significado desse byte não é documentado; o evento não altera o estado de ANC.
+- Notificações `0x2F`/`0x30` (bateria/versão pelo canal de comando) são
+  decodificadas se chegarem, mas o firmware 2.0.6 não as envia e as consultas
+  `0xFE` para esses opcodes não respondem. O projeto continua usando as
+  characteristics diretas para essas leituras.
 - Bateria e versão do firmware são lidas ao conectar e em **Atualizar**; não há
   atualização periódica dessas duas characteristics.
 - O mapa de toque tem atualização periódica só na GUI ociosa (~3 s). No CLI, use
   `device read touch` ou `device info` para reler.
-- As observações de protocolo são do firmware 2.0.6 e ainda não há matriz de
-  compatibilidade por versão. Consulte
+- O comando LDAC aplica o valor no fone, mas no firmware 2.0.6 termina com
+  "BLE link lost" em vez de concluir a reconexão; acompanhe o COR-11 em
+  [`PENDENCIAS.md`](PENDENCIAS.md).
+- Alguns ecos de estado (balanço, volume, detecção de uso e modo sono) podem
+  chegar depois da janela do comando, deixando a saída uma ação atrasada; o
+  `device info` seguinte confirma o valor (MEL-05).
+- A matriz de compatibilidade cobre o firmware 2.0.6 validado; versões de
+  terceiros não foram reproduzidas. Consulte
   [`PROTOCOLO_MelobudsNext.md`](PROTOCOLO_MelobudsNext.md) e o backlog em
   [`PENDENCIAS.md`](PENDENCIAS.md).
 

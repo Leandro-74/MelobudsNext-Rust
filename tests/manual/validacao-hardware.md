@@ -51,7 +51,7 @@ anterior ao final.
 | Passo | Comando | Resultado esperado |
 | --- | --- | --- |
 | 3.1 | `melobudsnext device game on` / `off` | Eco `0x09` e estado alterado |
-| 3.2 | `melobudsnext device sleep on` / `off` | Eco `0x10` e estado alterado |
+| 3.2 | `melobudsnext device sleep on` / `off` | Eco `0x10` (pode chegar atrasado) e estado alterado no `device info` seguinte |
 | 3.3 | `melobudsnext device anc --scene indoor --level 2` | Eco `0x17` com `01 01 01` |
 | 3.4 | `melobudsnext device anc --scene daily --level 3` | Eco `0x17` com `01 02 02` |
 | 3.5 | `melobudsnext device anc --scene wind` | Eco `0x17` com `01 04 00` |
@@ -59,9 +59,9 @@ anterior ao final.
 | 3.7 | `melobudsnext device anc --intensity 4` | Eco `0x17` com `03 01 04` |
 | 3.8 | `melobudsnext device anc --voice` | Eco `0x17` com `03 01 00` |
 | 3.9 | `melobudsnext device anc` | Eco `0x17` com `00 00 00` (o fone pode reportar `02 00 00` como desligado) |
-| 3.10 | `melobudsnext device balance 40` e `60` | Eco `0x16` e balanço alterado |
-| 3.11 | `melobudsnext device volume medium` | Eco `0x1D` com `06 06` |
-| 3.12 | `melobudsnext device wear on --keep-anc` / `off` | Eco `0x2C` com 4 bytes; ANC mantido ou não ao remover |
+| 3.10 | `melobudsnext device balance 40` e `60` | Eco `0x16`; o estado pode aparecer no `device info` seguinte (MEL-05) |
+| 3.11 | `melobudsnext device volume medium` | Eco `0x1D` com `06 06`; idem MEL-05 |
+| 3.12 | `melobudsnext device wear on --keep-anc` / `off` | Eco `0x2C` com 4 bytes; ANC mantido ou não ao remover; idem MEL-05 |
 | 3.13 | `melobudsnext device rename "Meu Fone"` | Nome alterado; restaure o nome original ao final |
 | 3.14 | `melobudsnext device query anc` | Resposta `0x17` com o estado atual |
 | 3.15 | `melobudsnext device send "FF 03 09 01 01"` | Bytes enviados; eco quando o firmware responder |
@@ -88,8 +88,8 @@ e 7.11.
 
 | Passo | Comando | Resultado esperado |
 | --- | --- | --- |
-| 5.1 | `melobudsnext device ldac off` | O fone reinicia e reconecta; o estado é sincronizado |
-| 5.2 | `melobudsnext device ldac on --wait 2` | O fone reinicia e reconecta; LDAC fica ligado |
+| 5.1 | `melobudsnext device ldac off` | O fone reinicia; no firmware 2.0.6 o valor é aplicado, mas o comando termina com "BLE link lost" (COR-11) — registrar |
+| 5.2 | `melobudsnext device ldac on --wait 2` | Idem 5.1; confirmar o valor com um `device info` seguinte |
 | 5.3 | Repetir 5.1/5.2 com `--reconnect-attempts 3 --reconnect-delay 1` | Mensagens `Reconnect attempt N/3...` aparecem e o intervalo é respeitado |
 | 5.4 | Repetir com o fone fora de alcance | O comando falha depois das tentativas, sem travar |
 
@@ -101,6 +101,10 @@ e 7.11.
 4. Resultado esperado: erro claro (CLI) ou retorno para **Desconectado** (GUI),
    sem manter um estado "Conectado" obsoleto.
 5. Ligue o fone e reconecte. O estado deve ser sincronizado novamente.
+
+Observação: em `device monitor`, a queda de link feita por outro processo não
+encerrou o comando (ele ficou aguardando até o timeout do teste). Registre se o
+monitor sai sozinho ou não.
 
 ## 7. GUI
 

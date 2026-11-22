@@ -47,6 +47,7 @@ Levantamento feito a partir da análise do repositório no commit `4028131`
 | COR-08 | Correção | P2 | `Packet::encode` entra em pânico em vez de retornar erro |
 | COR-09 | Correção | P2 | Escrita da configuração não é atômica |
 | COR-10 | Correção | P2 | GUI não tem parser de argumentos (`--help`, `--version`) |
+| COR-11 | Correção | P1 | LDAC retorna erro de link perdido em vez de reconectar |
 | REF-01 | Refatoração | P1 | Duplicação da orquestração entre CLI e GUI |
 | REF-02 | Refatoração | P2 | `gui.rs` monolítico (2.158 linhas) |
 | REF-03 | Refatoração | P1 | Falta abstração de transporte para testes |
@@ -60,6 +61,7 @@ Levantamento feito a partir da análise do repositório no commit `4028131`
 | MEL-02 | Melhoria | P2 | `ensure_powered` falha quando o estado é `Unknown` |
 | MEL-03 | Melhoria | P3 | Reconexão LDAC longa e sem progresso |
 | MEL-04 | Melhoria | P2 | Fallback do diretório `home` grava no diretório atual |
+| MEL-05 | Melhoria | P2 | Ecos de estado podem chegar depois da janela do comando |
 | TST-01 | Teste | P2 | Sem testes para helpers do CLI |
 | TST-02 | Teste | P1 | Fluxos de sessão sem dublê de transporte |
 | TST-03 | Teste | P2 | Sem testes para transições de estado da GUI |
@@ -82,6 +84,7 @@ Levantamento feito a partir da análise do repositório no commit `4028131`
 | PRO-02 | Protocolo/Hardware | P3 | Auto-desligar e opcodes desconhecidos não explorados |
 | PRO-03 | Protocolo/Hardware | P2 | Validação em Linux ainda não registrada |
 | PRO-04 | Protocolo/Hardware | P3 | Sem matriz de compatibilidade por firmware |
+| PRO-05 | Protocolo/Hardware | P3 | Quarto byte do `0x2C` varia e não está confirmado |
 
 ---
 
@@ -186,6 +189,24 @@ Levantamento feito a partir da análise do repositório no commit `4028131`
 - **Ação:** migrar para `clap` (já é dependência) com `--offline` e,
   opcionalmente, `--config`.
 - **Pronto quando:** `melobudsnext-gui --help` listar as flags suportadas.
+
+### COR-11 — LDAC retorna erro de link perdido em vez de reconectar
+- **Prioridade:** P1
+- **Onde:** `src/actions.rs` (`Controller::command_with`), `src/ble.rs`
+  (`BleSession::exchange`)
+- **Problema:** ao enviar `device ldac off` ou `on` no firmware 2.0.6, o fone
+  reinicia e derruba o link antes de o `exchange` terminar. O `exchange` chama
+  `ensure_link` depois da escrita e devolve `BLE link lost; connect again`; o
+  controlador só inicia a reconexão depois que `exchange` retorna `Ok`, então o
+  comando termina em erro mesmo tendo sido aplicado. O LDAC muda de estado
+  (confirmado por um `device info` seguinte), mas o CLI/GUI reportam falha e a
+  GUI pode descartar a sessão.
+- **Ação:** tratar a queda de link prevista nesse comando como sucesso da
+  escrita e seguir para a política de reconexão; cobrir com dublê de transporte
+  em que o `exchange` falha por link morto depois de registrar o pacote.
+- **Pronto quando:** `device ldac on/off` concluir a reconexão e exibir o estado
+  final, sem erro de link perdido.
+- **Descoberto em:** validação manual do Lote 6 (Linux, firmware 2.0.6).
 
 ---
 
@@ -319,6 +340,22 @@ Levantamento feito a partir da análise do repositório no commit `4028131`
 - **Ação:** usar o diretório de configuração da plataforma (ex.: `dirs`) ou
   retornar erro claro.
 - **Pronto quando:** execução sem `HOME` não gravar no cwd silenciosamente.
+
+### MEL-05 — Ecos de estado podem chegar depois da janela do comando
+- **Prioridade:** P2
+- **Onde:** `src/actions.rs` (`CommandOptions::listen`), `src/ble.rs`
+  (`BleSession::exchange`)
+- **Problema:** na validação do Lote 6, os ecos de `0x16` (balanço), `0x1D`
+  (volume), `0x2C` (detecção de uso) e `0x10` (modo sono) chegaram depois da
+  janela de espera do comando. O estado impresso ficou uma ação atrasado; o
+  `device info` seguinte mostrou o valor novo. O efeito é uma saída confusa,
+  não uma falha do fone.
+- **Ação:** medir o atraso real desses ecos e, se necessário, aumentar a janela
+  padrão, consultar o opcode depois do envio ou aplicar o valor enviado quando o
+  eco não chegar (sem mascarar mudanças externas).
+- **Pronto quando:** o estado exibido depois de um comando refletir o valor
+  aplicado, com teste que simule o eco atrasado.
+- **Descoberto em:** validação manual do Lote 6 (Linux, firmware 2.0.6).
 
 ---
 
@@ -538,6 +575,21 @@ Levantamento feito a partir da análise do repositório no commit `4028131`
   bytes).
 - **Ação:** manter uma matriz versão × comportamento conhecido.
 - **Pronto quando:** as divergências por firmware estiverem registradas.
+
+### PRO-05 — Quarto byte do `0x2C` varia e não está confirmado
+- **Prioridade:** P3
+- **Onde:** `src/protocol/commands.rs` (`WearDetection::from_params`),
+  `PROTOCOLO_MelobudsNext.md`
+- **Problema:** o firmware 2.0.6 reporta `0x2C` com 4 bytes. O quarto byte,
+  tratado como `tone`, apareceu como `00` no primeiro `device info`, mas assumiu
+  valores como `0xA0` e `0x5D` depois de alternar detecção/ANC, mesmo quando o
+  comando enviava `--tone 0`. O significado real (status, contador ou outro
+  campo) não foi confirmado, e o parser atual o expõe como configuração.
+- **Ação:** capturar novamente com o app oficial e comparar envio/report;
+  enquanto isso, evitar tratar o quarto byte como valor configurável.
+- **Pronto quando:** o campo estiver identificado ou marcado explicitamente como
+  desconhecido e preservado sem ser reenviado.
+- **Descoberto em:** validação manual do Lote 6 (Linux, firmware 2.0.6).
 
 ---
 
