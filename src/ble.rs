@@ -24,7 +24,7 @@ use uuid::Uuid;
 use crate::config::BleUuids;
 use crate::hex;
 use crate::protocol::commands;
-use crate::protocol::framing::Packet;
+use crate::protocol::framing::{self, Packet};
 use crate::protocol::opcode::Opcode;
 use crate::protocol::readings::{Battery, FirmwareVersion};
 use crate::protocol::touch::TouchMapping;
@@ -34,6 +34,9 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 const SCAN_POLL_INTERVAL: Duration = Duration::from_millis(250);
 const QUERY_INTERVAL: Duration = Duration::from_millis(50);
 const NOTIFICATION_SETTLE: Duration = Duration::from_millis(150);
+/// Extra time kept after the last expected query response, so a trailing
+/// notification from the same burst is not lost.
+const SYNC_GRACE: Duration = Duration::from_millis(100);
 
 /// Opcodes queried after connecting, in the order used by the reference
 /// implementation.
@@ -59,6 +62,46 @@ pub type NotificationStream = Pin<Box<dyn Stream<Item = ValueNotification> + Sen
 pub struct SyncReport {
     pub state: DeviceState,
     pub warnings: Vec<String>,
+}
+
+/// Tracks which query responses already arrived during a sync.
+///
+/// `sync` ends as soon as every target answered plus a short grace period,
+/// instead of always waiting for the full listen window.
+struct QueryTracker {
+    pending: BTreeSet<u8>,
+    grace: Duration,
+    done_at: Option<Instant>,
+}
+
+impl QueryTracker {
+    fn new(targets: impl IntoIterator<Item = Opcode>, grace: Duration) -> Self {
+        Self {
+            pending: targets.into_iter().map(Opcode::as_u8).collect(),
+            grace,
+            done_at: None,
+        }
+    }
+
+    /// Records the opcodes carried by one notification.
+    fn observe(&mut self, bytes: &[u8], now: Instant) {
+        let Ok(packets) = framing::parse(bytes) else {
+            return;
+        };
+
+        for packet in packets {
+            self.pending.remove(&packet.opcode);
+        }
+
+        if self.pending.is_empty() && self.done_at.is_none() {
+            self.done_at = Some(now + self.grace);
+        }
+    }
+
+    /// Instant at which the wait may end, capped by the full window deadline.
+    fn stop_at(&self, deadline: Instant) -> Instant {
+        self.done_at.map_or(deadline, |done| done.min(deadline))
+    }
 }
 
 /// A device found during a scan.
@@ -460,11 +503,17 @@ impl BleSession {
             .as_mut()
             .ok_or_else(|| anyhow!("notification stream is not open"))?;
         let deadline = Instant::now() + listen;
+        let mut tracker = QueryTracker::new(QUERY_TARGETS, SYNC_GRACE);
         let mut targets = QUERY_TARGETS.into_iter();
         let mut next_query = Instant::now();
 
         while Instant::now() < deadline {
-            let wake = next_query.min(deadline);
+            let stop_at = tracker.stop_at(deadline);
+            if Instant::now() >= stop_at {
+                break;
+            }
+
+            let wake = next_query.min(stop_at);
 
             tokio::select! {
                 _ = tokio::time::sleep_until(wake) => {
@@ -493,6 +542,7 @@ impl BleSession {
                     if notification.uuid != self.notification.uuid {
                         continue;
                     }
+                    tracker.observe(&notification.value, Instant::now());
                     if let Err(error) = report.state.apply_bytes(&notification.value) {
                         report.warnings.push(format!(
                             "notification {}: {error}",
@@ -823,6 +873,68 @@ mod tests {
         let values = receive_values(&mut stream, uuid, Duration::from_millis(20)).await;
 
         assert_eq!(values, vec![vec![0xFF, 0x03, 0x09, 0x01, 0x02]]);
+    }
+
+    /// Builds one composite notification carrying a block for each target.
+    fn query_responses(targets: &[Opcode]) -> Vec<u8> {
+        let mut bytes = vec![0xFF, 0x00];
+        for target in targets {
+            bytes.extend([target.as_u8(), 0x01, 0x00]);
+        }
+        bytes
+    }
+
+    #[test]
+    fn sync_stops_after_the_last_response_plus_grace() {
+        let now = Instant::now();
+        let deadline = now + Duration::from_millis(1500);
+        let mut tracker = QueryTracker::new(QUERY_TARGETS, SYNC_GRACE);
+
+        tracker.observe(
+            &query_responses(&QUERY_TARGETS),
+            now + Duration::from_millis(400),
+        );
+
+        assert_eq!(
+            tracker.stop_at(deadline),
+            now + Duration::from_millis(400) + SYNC_GRACE
+        );
+        assert!(tracker.stop_at(deadline) < deadline);
+    }
+
+    #[test]
+    fn sync_waits_for_the_full_window_when_a_response_is_missing() {
+        let now = Instant::now();
+        let deadline = now + Duration::from_millis(1500);
+        let mut tracker = QueryTracker::new(QUERY_TARGETS, SYNC_GRACE);
+
+        // Every target except the last one answers.
+        tracker.observe(
+            &query_responses(&QUERY_TARGETS[..QUERY_TARGETS.len() - 1]),
+            now + Duration::from_millis(400),
+        );
+
+        assert_eq!(tracker.stop_at(deadline), deadline);
+    }
+
+    #[test]
+    fn sync_starts_the_grace_period_only_after_all_targets_answer() {
+        let now = Instant::now();
+        let deadline = now + Duration::from_millis(1500);
+        let mut tracker = QueryTracker::new(QUERY_TARGETS, SYNC_GRACE);
+
+        tracker.observe(&query_responses(&QUERY_TARGETS[..1]), now);
+        assert_eq!(tracker.stop_at(deadline), deadline);
+
+        tracker.observe(
+            &query_responses(&QUERY_TARGETS[1..]),
+            now + Duration::from_millis(350),
+        );
+
+        assert_eq!(
+            tracker.stop_at(deadline),
+            now + Duration::from_millis(350) + SYNC_GRACE
+        );
     }
 
     #[test]

@@ -211,7 +211,11 @@ Python, faça uma cópia antes, porque ele espera a chave `address`.
 - `rename` vazio não apaga o nome atual.
 - O `sync` não aborta por causa de uma leitura opcional; falhas viram avisos.
 - As consultas `0xFE` são enviadas a cada 50 ms enquanto as notificações são
-  lidas, evitando perder respostas.
+  lidas, evitando perder respostas. O `sync` termina assim que todos os opcodes
+  consultados respondem, mantendo 100 ms de tolerância para notificações
+  atrasadas; se algum não responder, espera a janela completa (`--wait`).
+- A subscrição de notificações é aberta uma vez por sessão e reutilizada por
+  todas as ações; ela só é refeita quando a conexão é restabelecida.
 - Depois de mudar LDAC, a conexão é refeita automaticamente (10 tentativas, 3 s
   entre elas), como no cliente Python.
 - Na GUI, cada ação verifica o link ao terminar. Se o fone foi desligado, a
