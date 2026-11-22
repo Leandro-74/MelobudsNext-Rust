@@ -31,6 +31,24 @@ pub const RECONNECT_ATTEMPTS: u32 = 10;
 /// Delay between reconnection attempts.
 pub const RECONNECT_DELAY: Duration = Duration::from_secs(3);
 
+/// How a command reconnects after the headphones restart.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ReconnectPolicy {
+    /// Total attempts, at least one.
+    pub attempts: u32,
+    /// Delay before each attempt.
+    pub delay: Duration,
+}
+
+impl Default for ReconnectPolicy {
+    fn default() -> Self {
+        Self {
+            attempts: RECONNECT_ATTEMPTS,
+            delay: RECONNECT_DELAY,
+        }
+    }
+}
+
 /// A boxed future returned by [`Transport`] methods.
 pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
@@ -55,8 +73,9 @@ pub trait Transport: Send {
         listen: Duration,
     ) -> BoxFuture<'a, Result<Vec<Vec<u8>>>>;
 
-    /// Reconnects after a link drop, rediscovering services.
-    fn reconnect<'a>(&'a mut self, attempts: u32, delay: Duration) -> BoxFuture<'a, Result<()>>;
+    /// Performs one reconnection attempt after `delay`: closes the previous
+    /// link, waits, reconnects and rediscovers the services.
+    fn reconnect_once<'a>(&'a mut self, delay: Duration) -> BoxFuture<'a, Result<()>>;
 
     /// Writes a complete 20-byte touch mapping.
     fn write_touch<'a>(&'a self, mapping: &'a TouchMapping) -> BoxFuture<'a, Result<()>>;
@@ -86,8 +105,8 @@ impl Transport for BleSession {
         Box::pin(BleSession::exchange(self, packet, listen))
     }
 
-    fn reconnect<'a>(&'a mut self, attempts: u32, delay: Duration) -> BoxFuture<'a, Result<()>> {
-        Box::pin(BleSession::reconnect(self, attempts, delay))
+    fn reconnect_once<'a>(&'a mut self, delay: Duration) -> BoxFuture<'a, Result<()>> {
+        Box::pin(BleSession::reconnect_once(self, delay))
     }
 
     fn write_touch<'a>(&'a self, mapping: &'a TouchMapping) -> BoxFuture<'a, Result<()>> {
@@ -159,6 +178,8 @@ pub struct CommandOptions {
     pub sync_window: Duration,
     /// Whether the command restarts the headphones and requires a reconnection.
     pub reconnect: bool,
+    /// How many times and how often to reconnect when `reconnect` is set.
+    pub reconnect_policy: ReconnectPolicy,
     /// How to handle a command that is not echoed.
     pub echo_policy: EchoPolicy,
 }
@@ -170,6 +191,7 @@ impl CommandOptions {
             listen: COMMAND_WINDOW,
             sync_window: SYNC_WINDOW,
             reconnect,
+            reconnect_policy: ReconnectPolicy::default(),
             echo_policy: EchoPolicy::ApplyRequestedWhenSilent,
         }
     }
@@ -180,8 +202,15 @@ impl CommandOptions {
             listen,
             sync_window: SYNC_WINDOW,
             reconnect,
+            reconnect_policy: ReconnectPolicy::default(),
             echo_policy: EchoPolicy::EchoesOnly,
         }
+    }
+
+    /// Overrides the default reconnection attempts and interval.
+    pub fn with_reconnect_policy(mut self, policy: ReconnectPolicy) -> Self {
+        self.reconnect_policy = policy;
+        self
     }
 }
 
@@ -204,6 +233,10 @@ pub trait CommandObserver: Send {
     fn notification(&mut self, _value: &[u8]) {}
 
     fn reconnecting(&mut self) {}
+
+    /// Called before each reconnection attempt, with a 1-based `attempt` and
+    /// the configured `attempts` total.
+    fn reconnect_attempt(&mut self, _attempt: u32, _attempts: u32) {}
 }
 
 /// Observer used when the caller only needs the final result.
@@ -442,13 +475,12 @@ impl Controller {
             observer.reconnecting();
 
             let report = {
+                self.reconnect_with(observer, options.reconnect_policy)
+                    .await?;
                 let client = self
                     .client
                     .as_mut()
                     .ok_or_else(|| anyhow!("device not connected"))?;
-                client
-                    .reconnect(RECONNECT_ATTEMPTS, RECONNECT_DELAY)
-                    .await?;
                 client.sync(options.sync_window.max(options.listen)).await?
             };
 
@@ -471,6 +503,35 @@ impl Controller {
             warnings,
             reconnected: options.reconnect,
         })
+    }
+
+    /// Drives the reconnection attempts, reporting each one before it starts.
+    async fn reconnect_with(
+        &mut self,
+        observer: &mut dyn CommandObserver,
+        policy: ReconnectPolicy,
+    ) -> Result<()> {
+        let attempts = policy.attempts.max(1);
+        let mut last_error = None;
+
+        for attempt in 1..=attempts {
+            observer.reconnect_attempt(attempt, attempts);
+
+            let client = self
+                .client
+                .as_mut()
+                .ok_or_else(|| anyhow!("device not connected"))?;
+
+            match client.reconnect_once(policy.delay).await {
+                Ok(()) => return Ok(()),
+                Err(error) => {
+                    last_error =
+                        Some(error.context(format!("reconnect attempt {attempt}/{attempts}")));
+                }
+            }
+        }
+
+        Err(last_error.unwrap_or_else(|| anyhow!("failed to reconnect")))
     }
 
     /// Renames the device, keeping the requested name when it is not echoed.
@@ -549,11 +610,11 @@ mod tests {
         sync_error: Option<String>,
         exchange_results: VecDeque<Vec<Vec<u8>>>,
         exchange_error: Option<String>,
-        reconnect_error: Option<String>,
         sync_calls: usize,
         exchange_calls: usize,
         exchange_packets: Vec<Packet>,
         reconnect_calls: usize,
+        reconnect_failures: usize,
         disconnect_calls: usize,
         touch_writes: Vec<TouchMapping>,
     }
@@ -638,16 +699,13 @@ mod tests {
             })
         }
 
-        fn reconnect<'a>(
-            &'a mut self,
-            _attempts: u32,
-            _delay: Duration,
-        ) -> BoxFuture<'a, Result<()>> {
+        fn reconnect_once<'a>(&'a mut self, _delay: Duration) -> BoxFuture<'a, Result<()>> {
             Box::pin(async move {
                 let mut state = self.inner.lock().unwrap();
                 state.reconnect_calls += 1;
-                if let Some(error) = state.reconnect_error.take() {
-                    return Err(anyhow!(error));
+                if state.reconnect_failures > 0 {
+                    state.reconnect_failures -= 1;
+                    return Err(anyhow!("reconnect failed"));
                 }
                 state.connected = true;
                 Ok(())
@@ -737,6 +795,7 @@ mod tests {
     struct RecordingObserver {
         notifications: Vec<Vec<u8>>,
         reconnections: usize,
+        attempts: Vec<(u32, u32)>,
     }
 
     impl CommandObserver for RecordingObserver {
@@ -746,6 +805,10 @@ mod tests {
 
         fn reconnecting(&mut self) {
             self.reconnections += 1;
+        }
+
+        fn reconnect_attempt(&mut self, attempt: u32, attempts: u32) {
+            self.attempts.push((attempt, attempts));
         }
     }
 
@@ -1059,6 +1122,79 @@ mod tests {
         assert_eq!(controller.state().channel_balance, 20);
         // The CLI policy does not apply the requested packet after a reconnection.
         assert!(!controller.state().ldac);
+    }
+
+    #[test]
+    fn reconnect_policy_defaults_match_the_public_constants() {
+        let policy = super::ReconnectPolicy::default();
+
+        assert_eq!(policy.attempts, super::RECONNECT_ATTEMPTS);
+        assert_eq!(policy.delay, super::RECONNECT_DELAY);
+    }
+
+    #[tokio::test]
+    async fn reports_every_reconnection_attempt() {
+        let connector = FakeConnector::new();
+        let transport = FakeTransport::new(ADDRESS);
+        transport.push_sync(DeviceState::default());
+        connector.push_ok(transport.clone());
+
+        let mut controller = controller(&connector);
+        controller.connect_to(ADDRESS).await.unwrap();
+        transport.push_exchange(Vec::new());
+        transport.push_sync(DeviceState::default());
+        transport.state().reconnect_failures = 2;
+
+        let policy = super::ReconnectPolicy {
+            attempts: 4,
+            delay: Duration::ZERO,
+        };
+        let mut observer = RecordingObserver::default();
+        let outcome = controller
+            .command_with(
+                &commands::ldac(true),
+                &CommandOptions::gui(true).with_reconnect_policy(policy),
+                &mut observer,
+            )
+            .await
+            .unwrap();
+
+        assert!(outcome.reconnected);
+        assert_eq!(observer.reconnections, 1);
+        assert_eq!(observer.attempts, vec![(1, 4), (2, 4), (3, 4)]);
+        assert_eq!(transport.state().reconnect_calls, 3);
+        assert!(controller.state().ldac);
+    }
+
+    #[tokio::test]
+    async fn stops_after_the_configured_attempts() {
+        let connector = FakeConnector::new();
+        let transport = FakeTransport::new(ADDRESS);
+        transport.push_sync(DeviceState::default());
+        connector.push_ok(transport.clone());
+
+        let mut controller = controller(&connector);
+        controller.connect_to(ADDRESS).await.unwrap();
+        transport.push_exchange(Vec::new());
+        transport.state().reconnect_failures = 10;
+
+        let policy = super::ReconnectPolicy {
+            attempts: 3,
+            delay: Duration::ZERO,
+        };
+        let mut observer = RecordingObserver::default();
+        let error = controller
+            .command_with(
+                &commands::ldac(true),
+                &CommandOptions::gui(true).with_reconnect_policy(policy),
+                &mut observer,
+            )
+            .await
+            .unwrap_err();
+
+        assert!(format!("{error:#}").contains("3/3"), "error was: {error:#}");
+        assert_eq!(observer.attempts, vec![(1, 3), (2, 3), (3, 3)]);
+        assert_eq!(transport.state().reconnect_calls, 3);
     }
 
     #[tokio::test]

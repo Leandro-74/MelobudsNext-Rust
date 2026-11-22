@@ -797,7 +797,7 @@ documentação.
 | 1 | `fix/robustez-gui` | 0 | 9 | Implementado (357c1f4, 2026-11-22) |
 | 2 | `refactor/controlador-transporte` | 1 | 4 | Implementado (0764928, 2026-11-22) |
 | 3 | `perf/sincronizacao-notificacoes` | 2 | 4 | Implementado (28963cd, 2026-11-22) |
-| 4 | `refactor/gui-modulos` | 1 | 3 | Pendente |
+| 4 | `refactor/gui-modulos` | 1 | 3 | Implementado (0e73c22, 2026-11-22) |
 | 5 | `feat/gui-tempo-real` | 2, 3, 4 | 2 | Pendente |
 | 6 | `feat/protocolo-hardware` | 0, 2 | 6 | Pendente |
 | 7 | `chore/docs-release` | todos | 4 | Pendente |
@@ -1008,6 +1008,57 @@ Cada sessão adiciona aqui a subseção do lote concluído, antes do merge.
     validação com hardware segue pendente. O Lote 3 pode reutilizar
     `Transport`/`Controller` para a stream persistente e o encerramento
     antecipado do sync.
+
+#### Lote 4 — Manutenibilidade da GUI e do build
+
+- **Status:** Implementado
+- **Branch:** `refactor/gui-modulos`
+- **Commits:** `7a3f022` (REF-02), `b5b882d` (MEL-03), `0e73c22` (INF-04)
+- **Validação:** gate completo na branch e na `main` (`cargo fmt --check`,
+  `cargo clippy --all-targets -- -D warnings`, `cargo test --all-targets` com
+  118 testes da lib + 30 da GUI + 6 de integração, `cargo build --release`).
+  `cargo build --no-default-features` em um `CARGO_TARGET_DIR` limpo gerou
+  apenas `melobudsnext`, e `cargo tree --no-default-features` não lista o
+  `iced`. GUI aberta com `--offline --config <fictício>` em Arch Linux/KDE
+  Wayland: cabeçalho, painel esquerdo, aba Status, cartões de bateria, campo de
+  renomear e rodapé renderizaram no layout de 1200x800; as demais abas são
+  renderizadas no teste de regressão de COR-03. Hardware: **não executado** —
+  não havia fone disponível na sessão, então a reconexão LDAC e o progresso não
+  foram observados no dispositivo.
+- **Notas:**
+  - REF-02 deixou `src/bin/gui.rs` com 48 linhas (só a entrada e os módulos) e
+    distribuiu o restante em `gui/app.rs` (estado e mensagens), `cli.rs`,
+    `options.rs`, `theme.rs`, `widgets.rs`, `view.rs`, `device_panel.rs` e
+    `tabs/{status,anc,audio,touch,wear}.rs`. O maior arquivo é `app.rs`, com 557
+    linhas. Os testes da GUI foram separados em `gui/tests/cli.rs` (flags e
+    configuração) e `gui/tests/app.rs` (estado e regressões), ambos abaixo de
+    600 linhas.
+  - Os módulos usam `pub(crate)` e os testes acessam `crate::app`, `crate::options`
+    e `crate::view`; os `include_bytes!` dos SVGs foram ajustados para
+    `../../../assets/` por causa da nova profundidade.
+  - INF-04 criou a feature `gui` (ligada por padrão) com `iced` opcional e
+    `required-features = ["gui"]` no binário. O CLI pode ser compilado e testado
+    sem o `iced`; documentado no README. Dívida: a CI continua rodando o gate
+    com as features padrão, então a variante sem GUI depende de execução manual.
+  - MEL-03 moveu o laço de reconexão do `BleSession` para o `Controller`, que
+    agora chama `Transport::reconnect_once` por tentativa e avisa o
+    `CommandObserver` antes de cada uma (`reconnect_attempt`). Assim o CLI
+    imprime `Reconnect attempt N/M...` (em `stderr` no modo `--json`) e a GUI
+    atualiza o rótulo de status. `ReconnectPolicy` (tentativas e intervalo) foi
+    adicionada às `CommandOptions` e exposta em `device ldac` e na GUI com
+    `--reconnect-attempts`/`--reconnect-delay`.
+  - Armadilha: o progresso da GUI usa um canal `futures` alimentado pela própria
+    `Task::stream`, sem `tokio::spawn`, porque vários testes chamam `update` fora
+    de um runtime e um spawn entraria em pânico. O futuro de conclusão envia
+    `Finished` pelo mesmo canal, preservando a ordem progresso → resultado.
+  - Dívidas: a reconexão LDAC segue sem validação em hardware; a CI não exercita
+    `--no-default-features`; a GUI não tem um teste que ligue o fluxo completo
+    de progresso (a cobertura é a mensagem isolada + o observador do
+    controlador).
+  - Recomendação para o Lote 5: a subscrição persistente pode reaproveitar a
+    `Transport`/`Controller` do Lote 3 e os módulos `app`/`tabs` criados aqui;
+    ao adicionar mensagens de estado ao vivo, siga o padrão de `Task::stream`
+    para não bloquear `update` nem exigir runtime nos testes.
 
 ## Checklist de release (após o Lote 7)
 

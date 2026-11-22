@@ -253,32 +253,19 @@ impl BleSession {
         }
     }
 
-    /// Reconnects after a link drop (for example when LDAC restarts the
-    /// headphones). Services and characteristics are rediscovered.
-    pub async fn reconnect(&mut self, attempts: u32, delay: Duration) -> Result<()> {
+    /// Performs one reconnection attempt after a link drop (for example when
+    /// LDAC restarts the headphones). Services and characteristics are
+    /// rediscovered. The caller drives the retry loop so it can report
+    /// progress between attempts.
+    pub async fn reconnect_once(&mut self, delay: Duration) -> Result<()> {
         let _ = self.peripheral.disconnect().await;
-        let mut last_error = None;
+        tokio::time::sleep(delay).await;
 
-        for attempt in 1..=attempts.max(1) {
-            tokio::time::sleep(delay).await;
-
-            match self.peripheral.connect_with_timeout(CONNECT_TIMEOUT).await {
-                Ok(()) => match self.refresh().await {
-                    Ok(()) => return Ok(()),
-                    Err(error) => {
-                        let _ = self.peripheral.disconnect().await;
-                        last_error = Some(error.context(format!("reconnect attempt {attempt}")));
-                    }
-                },
-                Err(error) => {
-                    last_error = Some(
-                        anyhow::Error::new(error).context(format!("reconnect attempt {attempt}")),
-                    );
-                }
-            }
-        }
-
-        Err(last_error.unwrap_or_else(|| anyhow!("failed to reconnect")))
+        self.peripheral
+            .connect_with_timeout(CONNECT_TIMEOUT)
+            .await
+            .context("failed to reconnect")?;
+        self.refresh().await
     }
 
     async fn refresh(&mut self) -> Result<()> {

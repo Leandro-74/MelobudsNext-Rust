@@ -7,6 +7,7 @@ use std::time::Duration;
 
 use anyhow::{anyhow, bail, Context, Result};
 
+use crate::actions::ReconnectPolicy;
 use crate::protocol::anc::{AncMode, AncScene, TransparencyMode};
 use crate::protocol::touch::{TouchFunction, TouchKey, TouchMapping};
 
@@ -54,6 +55,30 @@ pub fn wait_duration(seconds: f64) -> Result<Duration> {
     Ok(Duration::from_secs_f64(seconds))
 }
 
+/// Validates the number of reconnection attempts after a headphone restart.
+pub fn reconnect_attempts(attempts: u32) -> Result<u32> {
+    if attempts == 0 {
+        bail!("reconnect attempts must be at least 1");
+    }
+    Ok(attempts)
+}
+
+/// Validates the interval between reconnection attempts.
+pub fn reconnect_delay(seconds: f64) -> Result<Duration> {
+    if !(0.0..=60.0).contains(&seconds) {
+        bail!("reconnect delay must be a number of seconds between 0 and 60");
+    }
+    Ok(Duration::from_secs_f64(seconds))
+}
+
+/// Builds the reconnection policy used when the headphones restart.
+pub fn reconnect_policy(attempts: u32, delay_seconds: f64) -> Result<ReconnectPolicy> {
+    Ok(ReconnectPolicy {
+        attempts: reconnect_attempts(attempts)?,
+        delay: reconnect_delay(delay_seconds)?,
+    })
+}
+
 /// Parses `KEY=FUNCTION` touch bindings into a complete mapping.
 pub fn mapping_from_bindings(bindings: &[String]) -> Result<TouchMapping> {
     let mut mapping = TouchMapping::new();
@@ -78,7 +103,7 @@ pub fn mapping_from_bindings(bindings: &[String]) -> Result<TouchMapping> {
 
 #[cfg(test)]
 mod tests {
-    use super::{build_anc_mode, mapping_from_bindings, wait_duration};
+    use super::{build_anc_mode, mapping_from_bindings, reconnect_policy, wait_duration};
     use crate::protocol::anc::{AncMode, AncScene, TransparencyMode};
     use crate::protocol::touch::{TouchFunction, TouchKey};
 
@@ -143,6 +168,18 @@ mod tests {
         assert!(wait_duration(-0.1).is_err());
         assert!(wait_duration(3600.1).is_err());
         assert!(wait_duration(f64::NAN).is_err());
+    }
+
+    #[test]
+    fn validates_the_reconnection_policy() {
+        let policy = reconnect_policy(4, 0.5).unwrap();
+        assert_eq!(policy.attempts, 4);
+        assert_eq!(policy.delay.as_millis(), 500);
+
+        assert!(reconnect_policy(0, 1.0).is_err());
+        assert!(reconnect_policy(1, -0.1).is_err());
+        assert!(reconnect_policy(1, 60.1).is_err());
+        assert!(reconnect_policy(1, f64::NAN).is_err());
     }
 
     #[test]
