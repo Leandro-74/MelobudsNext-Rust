@@ -1,8 +1,8 @@
 # Empacotamento e release
 
-Artefatos de distribuição do MelobudsNext. O projeto ainda **não publica** uma
-release; estes arquivos preparam o fluxo descrito no checklist de release em
-[`../PENDENCIAS.md`](../PENDENCIAS.md).
+Artefatos de distribuição do MelobudsNext. A release `0.2.0` está preparada; o
+push da `main`/tag e a criação da release no GitHub são passos manuais. O fluxo
+completo está no checklist de release em [`../PENDENCIAS.md`](../PENDENCIAS.md).
 
 ## Conteúdo
 
@@ -29,8 +29,7 @@ release; estes arquivos preparam o fluxo descrito no checklist de release em
 - Tag anotada `vX.Y.Z` criada e enviada **somente** no passo de publicação, que
   é manual.
 
-A versão atual do pacote é `0.1.0`. O checklist sugere `0.2.0` para a primeira
-release; não altere a versão fora do lote de release.
+A versão atual do pacote é `0.2.0`; não altere a versão fora do lote de release.
 
 ## Artefato de Linux
 
@@ -127,7 +126,8 @@ cd MelobudsNext-Rust
 O script gera `packaging/aur/melobudsnext-<versão>.tar.gz` a partir do commit
 atual, grava o SHA-256 desse tarball na linha `sha256sums` do `PKGBUILD` e roda
 `makepkg`. Sem `-si` o pacote é apenas compilado; com `-si`, `makepkg` instala
-(confirmando as dependências). Depois da instalação:
+(confirmando as dependências). A instalação foi validada com `makepkg -si` em um
+Arch Linux x86_64 em **2026-11-22**. Depois da instalação:
 
 ```sh
 melobudsnext --version

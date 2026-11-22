@@ -1428,7 +1428,10 @@ Cada sessão adiciona aqui a subseção do lote concluído, antes do merge.
   `melobudsnext-gui --version` responderam `0.1.0`; o pacote também foi
   instalado com `pacman -U` em um root isolado sob `fakeroot`
   (`--root /tmp/.../archroot`), com a lista de arquivos conferida e os dois
-  binários executando. O `prepare()` foi testado com um tarball com prefixo
+  binários executando. A instalação de verdade foi executada pelo usuário com
+  `./packaging/aur/build-local.sh -si` em um Arch Linux x86_64 (2026-11-22), e o
+  pacote, o menu e o ícone funcionaram. O `prepare()` foi testado com um tarball
+  com prefixo
   `MelobudsNext-Rust-0.1.0/` (formato do GitHub) e normalizou o diretório
   corretamente. Windows: `cargo-xwin` 0.24.1 gerou `dist/melobudsnext-gui.exe`
   (7,3 MiB, SHA-256
@@ -1475,17 +1478,30 @@ Cada sessão adiciona aqui a subseção do lote concluído, antes do merge.
   - O artefato de Windows fica em `dist/` (ignorado pelo git); o checksum é
     publicado junto do `.exe` no GitHub Releases. O `.exe` não é assinado, então
     o SmartScreen pedirá confirmação.
-  - Dívidas: a instalação via `makepkg -si` no sistema do usuário não foi
-    executada (o `sudo` pede senha nesta sessão) nem em um Arch limpo; a
-    validação do pacote ficou no build/`check()` + `pacman -U` em root isolado.
-    A versão continua `0.1.0` (o bump é do lote de release), o AUR não foi
-    submetido e o `.SRCINFO` precisa ser regerado depois do `updpkgsums`. O
-    ícone foi adicionado depois da validação do usuário; vale conferir a
-    aparência no Explorer.
+  - Dívidas: a instalação em um Arch limpo (chroot/VM) não foi feita, mas o
+    `makepkg -si` foi validado no Arch do próprio usuário. A versão `0.1.0` foi
+    promovida para `0.2.0` no lote de release; o AUR não foi submetido e o
+    `.SRCINFO` precisa ser regerado depois do `updpkgsums` pós-tag. O ícone foi
+    adicionado depois da validação inicial do Windows e conferido depois.
   - Recomendação para a release: criar a tag, rodar `updpkgsums`, regerar o
     `.SRCINFO`, instalar via `makepkg -si` em um Arch limpo e reabrir o `.exe`
     (conferindo o ícone) em Windows; só depois publicar os artefatos e o
     `SHA256SUMS`.
+
+### Release 0.2.0
+
+- **Versão:** `0.2.0` em `Cargo.toml`, `Cargo.lock` e `packaging/aur/PKGBUILD`.
+- **Tag:** `v0.2.0` anotada, criada localmente no commit de release; o push é
+  manual.
+- **Artefatos em `dist/`:** `.tar.gz` de Linux com os dois binários,
+  `melobudsnext-gui.exe` (CRT estático + ícone), `SHA256SUMS` e os `.sha256`
+  individuais.
+- **Checksum do `PKGBUILD`:** fixado num commit posterior à tag, a partir do
+  snapshot `git archive` da tag; depois do push, rode `updpkgsums` para trocar
+  pelo hash do tarball do GitHub (os dois arquivos não são byte a byte iguais) e
+  regenere o `.SRCINFO`.
+- **Pendente (manual):** push da `main` e da tag, `gh release create` com os
+  artefatos e o `SHA256SUMS`, e a submissão ao AUR.
 
 ## Checklist de release (após o Lote 9)
 
