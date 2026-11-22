@@ -1,19 +1,21 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{anyhow, Context, Result};
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use futures::StreamExt;
 
+use melobudsnext::actions::{CommandObserver, CommandOptions, ConnectError, Controller};
 use melobudsnext::ble::{self, BleSession};
+use melobudsnext::cli::{build_anc_mode, mapping_from_bindings, wait_duration};
 use melobudsnext::config::Config;
 use melobudsnext::hex;
-use melobudsnext::protocol::anc::{AncMode, AncScene, TransparencyMode};
+use melobudsnext::protocol::anc::AncScene;
 use melobudsnext::protocol::commands::{self, NotificationVolume, WearDetection};
 use melobudsnext::protocol::framing::{self, Packet};
 use melobudsnext::protocol::opcode::Opcode;
 use melobudsnext::protocol::readings::{Battery, FirmwareVersion};
-use melobudsnext::protocol::touch::{TouchFunction, TouchKey, TouchMapping};
+use melobudsnext::protocol::touch::TouchMapping;
 use melobudsnext::DeviceState;
 
 #[derive(Debug, Parser)]
@@ -532,7 +534,12 @@ async fn run_device(
             write_touch(&bindings, address, config_path, scan_timeout).await
         }
         DeviceCommand::Anc(args) => {
-            let mode = build_anc_mode(&args.anc)?;
+            let mode = build_anc_mode(
+                args.anc.scene.map(AncScene::from),
+                args.anc.level,
+                args.anc.intensity,
+                args.anc.voice,
+            )?;
             run_action(
                 commands::anc(mode),
                 &args.action,
@@ -646,9 +653,27 @@ async fn run_device(
     }
 }
 
-const SYNC_WINDOW: Duration = Duration::from_millis(1500);
-const RECONNECT_ATTEMPTS: u32 = 10;
-const RECONNECT_DELAY: Duration = Duration::from_secs(3);
+/// Prints command progress in the same order used before the shared controller.
+struct CliObserver {
+    json: bool,
+}
+
+impl CommandObserver for CliObserver {
+    fn notification(&mut self, value: &[u8]) {
+        if !self.json {
+            println!("rx: {}", hex::format(value));
+            print_notification(value);
+        }
+    }
+
+    fn reconnecting(&mut self) {
+        if self.json {
+            eprintln!("Reconnecting: the headphones restart when LDAC changes...");
+        } else {
+            println!("Reconnecting: the headphones restart when LDAC changes...");
+        }
+    }
+}
 
 /// Runs a command, applies its echoes to the live state and prints the result.
 ///
@@ -663,44 +688,48 @@ async fn run_action(
     scan_timeout: Duration,
 ) -> Result<()> {
     let wait = wait_duration(action.wait)?;
-    let mut session = open_session(address, config_path, scan_timeout).await?;
+    let config = Config::load_from(config_path)?;
+    let target = resolve_target(address, &config)?;
+    let mut controller = Controller::new(config.uuids.clone(), Some(target.clone()));
+    controller.set_scan_timeout(scan_timeout);
 
+    let mut warnings = match controller.connect_to(&target).await {
+        Ok(warnings) => warnings,
+        Err(ConnectError::Connect(error)) => {
+            return Err(error).with_context(|| format!("failed to connect to {target}"));
+        }
+        Err(ConnectError::Sync(error)) => return Err(error),
+    };
+
+    let device = controller.address().unwrap_or_else(|| target.clone());
     if action.json {
-        eprintln!("Device: {}", session.address());
+        eprintln!("Device: {device}");
     } else {
-        println!("Device: {}", session.address());
+        println!("Device: {device}");
     }
 
-    let mut report = session.sync(SYNC_WINDOW).await?;
+    let mut observer = CliObserver { json: action.json };
+    let outcome = controller
+        .command_with(
+            &packet,
+            &CommandOptions::cli(wait, reconnect),
+            &mut observer,
+        )
+        .await?;
 
-    for value in session.exchange(&packet, wait).await? {
-        if !action.json {
-            println!("rx: {}", hex::format(&value));
-            print_notification(&value);
-        }
-        if let Err(error) = report.state.apply_bytes(&value) {
-            report
-                .warnings
-                .push(format!("notification {}: {error}", hex::format(&value)));
-        }
+    if outcome.reconnected {
+        // The pre-reconnection warnings are superseded by the fresh sync.
+        warnings = outcome.warnings;
+    } else {
+        warnings.extend(outcome.warnings);
     }
 
-    if reconnect {
-        if action.json {
-            eprintln!("Reconnecting: the headphones restart when LDAC changes...");
-        } else {
-            println!("Reconnecting: the headphones restart when LDAC changes...");
-        }
-        session
-            .reconnect(RECONNECT_ATTEMPTS, RECONNECT_DELAY)
-            .await?;
-        report = session.sync(SYNC_WINDOW.max(wait)).await?;
+    print_warnings(&warnings);
+    print_state(controller.state(), action.json)?;
+
+    if let Err(error) = controller.disconnect().await {
+        eprintln!("warning: failed to disconnect: {error:#}");
     }
-
-    print_warnings(&report.warnings);
-    print_state(&report.state, action.json)?;
-
-    close(session).await;
     Ok(())
 }
 
@@ -719,18 +748,22 @@ fn print_state(state: &DeviceState, json: bool) -> Result<()> {
     Ok(())
 }
 
+fn resolve_target(address: Option<&str>, config: &Config) -> Result<String> {
+    match address {
+        Some(address) => Ok(address.to_string()),
+        None => config.mac_address.clone().ok_or_else(|| {
+            anyhow!("no device address; use --address or run `config set-mac <MAC>`")
+        }),
+    }
+}
+
 async fn open_session(
     address: Option<&str>,
     config_path: &Path,
     scan_timeout: Duration,
 ) -> Result<BleSession> {
     let config = Config::load_from(config_path)?;
-    let target = match address {
-        Some(address) => address.to_string(),
-        None => config.mac_address.clone().ok_or_else(|| {
-            anyhow!("no device address; use --address or run `config set-mac <MAC>`")
-        })?,
-    };
+    let target = resolve_target(address, &config)?;
 
     BleSession::connect(&target, &config.uuids, scan_timeout)
         .await
@@ -939,7 +972,12 @@ fn build_packet(command: BuildCommand) -> Result<Packet> {
         BuildCommand::Game { state } => commands::game_mode(state.enabled()),
         BuildCommand::Sleep { state } => commands::sleep_mode(state.enabled()),
         BuildCommand::Balance { value } => commands::channel_balance(value),
-        BuildCommand::Anc(args) => commands::anc(build_anc_mode(&args)?),
+        BuildCommand::Anc(args) => commands::anc(build_anc_mode(
+            args.scene.map(AncScene::from),
+            args.level,
+            args.intensity,
+            args.voice,
+        )?),
         BuildCommand::Rename { name } => commands::rename(&name)?,
         BuildCommand::NotificationVolume { level } => commands::notification_volume(level.into()),
         BuildCommand::WearDetection(args) => commands::wear_detection(WearDetection {
@@ -960,33 +998,6 @@ fn parse_opcode(value: &str) -> Result<Opcode> {
         .parse::<Opcode>()
         .map_err(anyhow::Error::msg)
         .with_context(|| format!("invalid query opcode {value:?}"))
-}
-
-fn build_anc_mode(args: &AncArgs) -> Result<AncMode> {
-    if args.intensity.is_some() || args.voice {
-        if args.scene.is_some() || args.level.is_some() {
-            bail!("--scene and --level are only valid in ANC mode");
-        }
-
-        let mode = match (args.voice, args.intensity) {
-            (true, None) => TransparencyMode::VoiceEnhancement,
-            (false, Some(intensity)) => TransparencyMode::Intensity(intensity),
-            (true, Some(_)) => bail!("--voice and --intensity cannot be used together"),
-            (false, None) => unreachable!("guarded by the outer condition"),
-        };
-
-        return Ok(AncMode::transparency(mode)?);
-    }
-
-    match args.scene {
-        Some(scene) => Ok(AncMode::anc(scene.into(), args.level)?),
-        None => {
-            if args.level.is_some() {
-                bail!("--level requires --scene");
-            }
-            Ok(AncMode::Off)
-        }
-    }
 }
 
 fn print_packet(packet: Packet) {
@@ -1077,27 +1088,6 @@ fn run_touch(command: TouchCommand) -> Result<()> {
     Ok(())
 }
 
-fn mapping_from_bindings(bindings: &[String]) -> Result<TouchMapping> {
-    let mut mapping = TouchMapping::new();
-
-    for binding in bindings {
-        let (key, function) = binding
-            .split_once('=')
-            .ok_or_else(|| anyhow!("invalid binding {binding:?}; expected KEY=FUNCTION"))?;
-        let key = key
-            .parse::<TouchKey>()
-            .map_err(anyhow::Error::msg)
-            .with_context(|| format!("invalid touch key {key:?}"))?;
-        let function = function
-            .parse::<TouchFunction>()
-            .map_err(anyhow::Error::msg)
-            .with_context(|| format!("invalid touch function {function:?}"))?;
-        mapping.set(key, function);
-    }
-
-    Ok(mapping)
-}
-
 fn decode_battery(bytes: &[u8]) -> Result<()> {
     let battery = Battery::parse(bytes)?;
     println!("Left:  {}", battery.left);
@@ -1139,11 +1129,4 @@ fn run_config(command: ConfigCommand, path: &Path) -> Result<()> {
 fn join_hex(parts: &[String]) -> Result<Vec<u8>> {
     let joined = parts.join(" ");
     hex::parse(&joined).with_context(|| format!("invalid hexadecimal input {joined:?}"))
-}
-
-fn wait_duration(seconds: f64) -> Result<Duration> {
-    if !(0.0..=3600.0).contains(&seconds) {
-        bail!("wait must be a number of seconds between 0 and 3600");
-    }
-    Ok(Duration::from_secs_f64(seconds))
 }
