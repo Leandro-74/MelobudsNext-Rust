@@ -147,8 +147,13 @@ impl Session {
             match controller.refresh_touch().await {
                 Ok(changed) => update.changed = changed,
                 Err(error) => {
-                    update.error = Some(format!("{error:#}"));
+                    // A direct read can race with another client and fail
+                    // transiently while the link is still usable. Only report
+                    // the failure when the probe confirms the link is gone;
+                    // otherwise the next idle tick retries silently.
+                    let message = format!("{error:#}");
                     controller.drop_client_if_link_lost().await;
+                    update.error = background_error(message, controller.is_connected());
                 }
             }
         }
@@ -156,6 +161,29 @@ impl Session {
         update.state = controller.state().clone();
         update.connected = controller.is_connected();
         update
+    }
+}
+
+/// Keeps a background read failure visible only when the link was lost.
+fn background_error(error: String, connected: bool) -> Option<String> {
+    (!connected).then_some(error)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::background_error;
+
+    #[test]
+    fn transient_background_errors_are_ignored_while_the_link_lives() {
+        assert_eq!(background_error("not connected".to_string(), true), None);
+    }
+
+    #[test]
+    fn background_errors_survive_a_lost_link() {
+        assert_eq!(
+            background_error("not connected".to_string(), false).as_deref(),
+            Some("not connected")
+        );
     }
 }
 
