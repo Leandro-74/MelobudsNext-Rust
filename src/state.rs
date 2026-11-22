@@ -127,7 +127,21 @@ impl DeviceState {
                 }
                 None => false,
             },
-            Opcode::Battery | Opcode::Firmware | Opcode::Query => false,
+            Opcode::Battery => match Battery::parse(&packet.params) {
+                Ok(battery) => {
+                    self.battery = Some(battery);
+                    true
+                }
+                Err(_) => false,
+            },
+            Opcode::Firmware => match FirmwareVersion::parse(&packet.params) {
+                Ok(firmware) => {
+                    self.firmware = Some(firmware);
+                    true
+                }
+                Err(_) => false,
+            },
+            Opcode::Query => false,
         }
     }
 
@@ -282,6 +296,24 @@ mod tests {
 
         assert!(!state.apply(&Packet::new(0x28, Vec::new())));
         assert_eq!(state.anc_wear.as_ref().map(|result| result.code()), Some(1));
+    }
+
+    #[test]
+    fn applies_battery_and_version_notifications() {
+        let mut state = DeviceState::default();
+
+        assert!(state.apply(&Packet::new(0x2F, [0xD0, 0x46, 0x00])));
+        assert_eq!(state.battery.unwrap().left.percent(), 80);
+        assert!(state.apply(&Packet::new(0x2F, [0x50, 0x46])));
+        assert!(!state.apply(&Packet::new(0x2F, [0xD0])));
+
+        assert!(state.apply(&Packet::new(0x30, [0x02, 0x00, 0x06])));
+        assert_eq!(state.firmware.unwrap().to_string(), "2.0.6");
+        // The 6-byte variant carries the right earbud version too; the first
+        // three bytes keep the same `DeviceState::firmware` semantics.
+        assert!(state.apply(&Packet::new(0x30, [0x02, 0x00, 0x06, 0x02, 0x00, 0x07])));
+        assert_eq!(state.firmware.unwrap().to_string(), "2.0.6");
+        assert!(!state.apply(&Packet::new(0x30, [0x02, 0x00])));
     }
 
     #[test]
