@@ -9,7 +9,7 @@ license=('MIT')
 depends=('dbus' 'bluez' 'libxkbcommon' 'wayland')
 makedepends=('cargo' 'rust' 'pkgconf')
 source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
-sha256sums=('85538c25664e8ca74d1dab9d2d7147e7c7400f89f73b1cf00b4856d3a0a1e788')
+sha256sums=('e950444f9ffdab3d94350aa20108484ca6a7b352e04177b30071e4d54887e791')
 
 prepare() {
   cd "$srcdir"
