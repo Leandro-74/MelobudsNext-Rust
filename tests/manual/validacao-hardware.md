@@ -88,10 +88,10 @@ e 7.11.
 
 | Passo | Comando | Resultado esperado |
 | --- | --- | --- |
-| 5.1 | `melobudsnext device ldac off` | O fone reinicia; no firmware 2.0.6 o valor é aplicado, mas o comando termina com "BLE link lost" (COR-11) — registrar |
-| 5.2 | `melobudsnext device ldac on --wait 2` | Idem 5.1; confirmar o valor com um `device info` seguinte |
-| 5.3 | Repetir 5.1/5.2 com `--reconnect-attempts 3 --reconnect-delay 1` | Mensagens `Reconnect attempt N/3...` aparecem e o intervalo é respeitado |
-| 5.4 | Repetir com o fone fora de alcance | O comando falha depois das tentativas, sem travar |
+| 5.1 | `melobudsnext device ldac off` | O fone reinicia, a ferramenta reconecta e o estado final mostra LDAC desligado, sem "BLE link lost" |
+| 5.2 | `melobudsnext device ldac on --wait 2` | Idem 5.1, com LDAC ligado no estado final |
+| 5.3 | Repetir 5.1/5.2 com `--reconnect-attempts 3 --reconnect-delay 1` | Mensagens `Reconnect attempt N/3...` aparecem, o intervalo é respeitado e o comando termina com o estado final |
+| 5.4 | Repetir com o fone fora de alcance | O comando falha depois das tentativas, sem travar e sem mascarar a queda |
 
 ## 6. Queda de link
 

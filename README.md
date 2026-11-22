@@ -329,16 +329,20 @@ Execução registrada em **2026-11-22**:
   todas as cenas de ANC e transparência, balanço, volume de notificação,
   detecção de uso, renomear (com restauração do nome), `query`, `send`,
   `inspect` e `monitor` funcionaram.
+- **LDAC:** `device ldac off` e `device ldac on` com
+  `--reconnect-attempts 3 --reconnect-delay 1` reconectaram (1 a 2 tentativas),
+  terminaram com o estado final correto e sem "BLE link lost".
 - **Notificações:** `0x28` foi capturado como `FF 03 28 01 01` depois de
   mudanças de ANC; `0x2F`/`0x30` não foram emitidos e as consultas `0xFE` para
   eles não responderam; `0x14` (auto-desligar) respondeu
   `FF 06 14 04 FF FF 00 00`.
 - **GUI:** `--help`, `--version` e `--offline --config <fictício>` abriram sem
-  erro (a janela foi encerrada pelo timeout do teste).
-- **Limitações encontradas:** o comando LDAC aplica o valor, mas termina com
-  "BLE link lost" em vez de reconectar (COR-11); alguns ecos de estado chegam
-  depois da janela do comando (MEL-05); o `device monitor` continuou aberto
-  quando o link foi derrubado por outro processo.
+  erro (a janela foi encerrada pelo timeout do teste). O toggle LDAC foi
+  acionado com o fone conectado: a interface mostrou o progresso, reconectou e
+  exibiu "LDAC desativado; o fone foi reconectado." sem erro.
+- **Limitações encontradas:** alguns ecos de estado chegam depois da janela do
+  comando (MEL-05); o `device monitor` continuou aberto quando o link foi
+  derrubado por outro processo.
 
 Para repetir a validação, siga o roteiro e registre plataforma, firmware e
 resultados sem dados sensíveis.
@@ -402,7 +406,10 @@ Python, faça uma cópia antes, porque ele espera a chave `address`.
   CLI imprime `Reconnect attempt N/10...` (ou em `stderr` com `--json`) e a GUI
   atualiza o cabeçalho com a tentativa atual. Use `--reconnect-attempts` e
   `--reconnect-delay` no CLI (ou na GUI) para ajustar a quantidade e o intervalo;
-  `--reconnect-delay 0` remove a pausa entre as tentativas.
+  `--reconnect-delay 0` remove a pausa entre as tentativas. O reinício do fone
+  derruba o link antes do eco; essa queda **depois** da escrita faz parte da
+  reconexão e não é reportada como "BLE link lost". Uma falha de escrita, ou uma
+  queda de link em comando que não reinicia o fone, continua sendo erro.
 - Na GUI, cada ação verifica o link ao terminar. Se o fone foi desligado, a
   sessão é descartada, a interface volta para "Desconectado" e o erro aparece no
   rodapé em vez de manter um estado antigo.
@@ -431,9 +438,8 @@ Python, faça uma cópia antes, porque ele espera a chave `address`.
   atualização periódica dessas duas characteristics.
 - O mapa de toque tem atualização periódica só na GUI ociosa (~3 s). No CLI, use
   `device read touch` ou `device info` para reler.
-- O comando LDAC aplica o valor no fone, mas no firmware 2.0.6 termina com
-  "BLE link lost" em vez de concluir a reconexão; acompanhe o COR-11 em
-  [`PENDENCIAS.md`](PENDENCIAS.md).
+- O reinício do LDAC derruba o link por alguns segundos; o comando só termina
+  depois da reconexão ou do esgotamento das tentativas configuradas.
 - Alguns ecos de estado (balanço, volume, detecção de uso e modo sono) podem
   chegar depois da janela do comando, deixando a saída uma ação atrasada; o
   `device info` seguinte confirma o valor (MEL-05).
