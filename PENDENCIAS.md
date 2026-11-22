@@ -48,6 +48,7 @@ Levantamento feito a partir da análise do repositório no commit `4028131`
 | COR-09 | Correção | P2 | Escrita da configuração não é atômica |
 | COR-10 | Correção | P2 | GUI não tem parser de argumentos (`--help`, `--version`) |
 | COR-11 | Correção | P1 | LDAC retorna erro de link perdido em vez de reconectar |
+| COR-12 | Correção | P1 | Escuta ao vivo pode impedir ações da GUI |
 | REF-01 | Refatoração | P1 | Duplicação da orquestração entre CLI e GUI |
 | REF-02 | Refatoração | P2 | `gui.rs` monolítico (2.158 linhas) |
 | REF-03 | Refatoração | P1 | Falta abstração de transporte para testes |
@@ -209,6 +210,23 @@ Levantamento feito a partir da análise do repositório no commit `4028131`
 - **Pronto quando:** `device ldac on/off` concluir a reconexão e exibir o estado
   final, sem erro de link perdido.
 - **Descoberto em:** validação manual do Lote 6 (Linux, firmware 2.0.6).
+- **Resolvido no:** Lote 8.
+
+### COR-12 — Escuta ao vivo pode impedir ações da GUI
+- **Prioridade:** P1
+- **Onde:** `src/bin/gui/app.rs` (`live_updates`), `src/bin/gui/ble_task.rs`
+  (`Session::poll`/`Session::run`)
+- **Problema:** quando a GUI fica ociosa, o laço de notificações reacquire o
+  mutex da sessão logo depois de cada espera. Uma ação enfileirada (por exemplo,
+  o toggle LDAC, que precisa reconectar) pode nunca receber o mutex: a interface
+  fica presa em "Alterando LDAC e reconectando..." e o comando não é enviado.
+  Descoberto na validação de hardware do Lote 8, ao testar o toggle LDAC.
+- **Ação:** ceder o executor entre as esperas ociosas, para que a ação
+  enfileirada assuma a sessão antes da próxima escuta.
+- **Pronto quando:** uma ação disparada com a GUI ociosa sempre começa e termina,
+  sem depender do intervalo das notificações.
+- **Descoberto em:** validação manual do Lote 8 (Linux, firmware 2.0.6).
+- **Resolvido no:** Lote 8.
 
 ---
 
@@ -931,12 +949,12 @@ testados e publicáveis no GitHub Releases; o AUR fica para uma etapa posterior.
 | 5 | `feat/gui-tempo-real` | 2, 3, 4 | 2 | Implementado (871a1bf, 2026-11-22) |
 | 6 | `feat/protocolo-hardware` | 0, 2 | 6 | Implementado (323e95f, 2026-11-22) |
 | 7 | `chore/docs-release` | todos | 4 | Implementado (d0daecb, 2026-11-22) |
-| 8 | `fix/ldac-reconexao` | 1, 2, 6 | 1 | Pendente |
+| 8 | `fix/ldac-reconexao` | 1, 2, 6 | 2 | Implementado (d4d85df, 2026-11-22) |
 | 9 | `chore/distribuicao` | 7, 8 | 2 | Pendente |
 
-> Total: 47 itens nos lotes planejados (44 originais, mais COR-11 no Lote 8 e
-> INF-06/INF-07 no Lote 9), mais TST-08, MEL-05 e PRO-05, ainda sem lote
-> atribuído. O lote 4 pode ser executado em paralelo ao 2/3 por não compartilhar
+> Total: 48 itens nos lotes planejados (44 originais, mais COR-11 e COR-12 no
+> Lote 8 e INF-06/INF-07 no Lote 9), mais TST-08, MEL-05 e PRO-05, ainda sem
+> lote atribuído. O lote 4 pode ser executado em paralelo ao 2/3 por não compartilhar
 > arquivos centrais, mas o merge deve seguir a ordem da tabela para manter a
 > `main` sempre estável.
 
@@ -1341,6 +1359,51 @@ Cada sessão adiciona aqui a subseção do lote concluído, antes do merge.
   - Recomendação: o checklist de release pode ser iniciado, mas decida o COR-11
     antes de publicar, já que ele afeta uma ação documentada; valide o pacote em
     uma máquina Arch limpa e teste o `.zip` de Windows em uma sessão real.
+
+#### Lote 8 — Correção do LDAC (COR-11)
+
+- **Status:** Implementado
+- **Branch:** `fix/ldac-reconexao`
+- **Commits:** `d4d85df` (COR-11), `df7e3e6` (COR-12), `9349a0a` (docs/validação)
+- **Validação:** gate completo na branch (`cargo fmt --check`,
+  `cargo clippy --all-targets -- -D warnings`, `cargo test --all-targets` com
+  135 testes da lib + 36 da GUI + 8 de integração, `cargo build --release`).
+  Hardware: Arch Linux, kernel `7.3.5-arch1-1` x86_64, Wayland/Hyprland, BlueZ
+  5.88, firmware 2.0.6.
+  - `device ldac off --reconnect-attempts 3 --reconnect-delay 1`: saída 0,
+    tentativas 1/3 e 2/3, estado final `LDAC: off`, sem "BLE link lost".
+  - `device ldac on --reconnect-attempts 3 --reconnect-delay 1`: saída 0,
+    tentativa 1/3, estado final `LDAC: on`, sem "BLE link lost".
+  - GUI conectada ao fone: o toggle LDAC foi desligado e religado; a interface
+    mostrou "Reconectando ao fone… tentativa 1 de 3", voltou para "Conectado" e
+    exibiu "LDAC desativado; o fone foi reconectado." e depois "LDAC ativado; o
+    fone foi reconectado.", sem erro. `device info` final confirmou LDAC ligado.
+- **Notas:**
+  - `BleSession::exchange` passou a devolver `ExchangeReport` com
+    `notifications` e `link_lost`. Uma falha de escrita continua sendo `Err`;
+    a queda **depois** da escrita é sinalizada em `link_lost`. O controlador só
+    segue para a reconexão quando `CommandOptions::reconnect` está ligado; nos
+    demais comandos a queda vira o mesmo erro "BLE link lost; connect again" de
+    antes. `rename` usa a mesma regra, porque não reinicia o fone.
+  - O CLI mantém a política antiga de descartar os avisos anteriores à
+    reconexão em favor do sync novo. A GUI aplica o valor pedido depois da
+    reconexão quando o sync não traz o campo, então o toggle não volta atrás.
+  - O teste de regressão do dublê cobre escrita seguida de link perdido
+    (`push_exchange_with_link_lost`), além de falha de escrita antes do envio,
+    queda em comando sem reconexão e queda no `rename`.
+  - Armadilha encontrada no hardware: com a GUI ociosa, o laço de notificações
+    reacqueria o mutex da sessão logo após cada espera e a ação enfileirada
+    nunca começava; a interface ficava presa em "Alterando LDAC e
+    reconectando...". Um `tokio::task::yield_now()` entre as esperas ociosas
+    resolveu (COR-12). A regressão é de temporização e foi validada no fone;
+    não há teste automatizado determinístico para essa corrida.
+  - A reconexão do LDAC leva de uma a duas tentativas no firmware 2.0.6; o
+    tempo varia com o reinício do fone. O CLI e a GUI usam os mesmos limites
+    (`--reconnect-attempts`/`--reconnect-delay`).
+  - Nenhuma dependência nova. Dívidas: a corrida do COR-12 não tem teste
+    automatizado; MEL-05 e PRO-05 seguem abertos.
+  - Recomendação para o Lote 9: a distribuição pode começar; o COR-11 não
+    bloqueia mais a release.
 
 ## Checklist de release (após o Lote 9)
 
