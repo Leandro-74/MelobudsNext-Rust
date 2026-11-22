@@ -23,6 +23,11 @@ thiserror = "2"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "time"] }
 uuid = "1"
 
+# Embeds the icon in the Windows executables (see build.rs). Required on the
+# host for cross builds, so it is not target-gated.
+[build-dependencies]
+winresource = { version = "0.1", default-features = false }
+
 [[bin]]
 name = "melobudsnext-gui"
 path = "src/bin/gui.rs"
