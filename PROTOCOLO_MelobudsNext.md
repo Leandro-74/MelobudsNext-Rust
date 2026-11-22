@@ -93,16 +93,35 @@ O fone responde a comandos com uma notificação de eco contendo o mesmo opcode,
 | `0x2C` | Detecção de uso | `[enable, music_index, anc_enable, tone]` | Implementado; formato "espelho" do report |
 | `0xFE` | Consulta de estado | `[opcode alvo]` | Validado |
 
+O `0xFE` também foi usado para consultar opcodes ainda não implementados. O
+firmware 2.0.6 respondeu a `0x14`, mas não a `0x06`, `0x28`, `0x29`, `0x2F` e
+`0x30`. Esses casos estão registrados na seção 4.3.
+
 ### 4.2 Opcodes de estado (notificações)
 
 | Opcode | Nome | Uso |
 | --- | --- | --- |
 | `0x09`, `0x10`, `0x16`, `0x17`, `0x18`, `0x1D`, `0x23`, `0x2C` | Eco / resposta | Mesmos formatos dos comandos acima |
-| `0x28` | ANC Wear / Result | Reconhecido no log, mas o conteúdo ainda não é interpretado |
-| `0x2F` | Bateria | Constante definida, mas a leitura real usa a characteristic `00000008` |
-| `0x30` | Versão | Constante definida, mas a leitura real usa a characteristic `00000007` |
+| `0x28` | ANC Wear / Result | Resultado de uma alteração de ANC; payload preservado (seção 7.11) |
+| `0x2F` | Bateria | `[esquerda, direita, caixa]` (seção 7.12); o firmware 2.0.6 não notifica nem responde ao `0xFE` |
+| `0x30` | Versão | 3 ou 6 bytes (seção 7.13); o firmware 2.0.6 não notifica nem responde ao `0xFE` |
 
-### 4.3 Resumo de exemplos de pacotes completos
+### 4.3 Opcodes observados fora do escopo
+
+Estes opcodes apareceram em capturas ou em consultas, mas não são usados pelo
+cliente. A tabela registra apenas o que foi observado no firmware 2.0.6; a
+semântica não confirmada fica explicitamente marcada.
+
+| Opcode | Consulta enviada | Resposta em 2.0.6 | Situação |
+| --- | --- | --- | --- |
+| `0x14` | `FF 03 FE 01 14` | `FF 06 14 04 FF FF 00 00` | Auto-desligar; formato em 7.10, não implementado |
+| `0x06` | `FF 03 FE 01 06` | nenhuma em 350 ms | Detecção in-ear; não explorado |
+| `0x29` | `FF 03 FE 01 29` | nenhuma em 350 ms | "ANC Wear" em documentação de terceiros; não explorado |
+| `0x28` | `FF 03 FE 01 28` | nenhuma em 350 ms | Só foi visto como notificação espontânea (7.11) |
+| `0x2F` | `FF 03 FE 01 2F` | nenhuma em 350 ms | Bateria via comando; usar a characteristic `00000008` |
+| `0x30` | `FF 03 FE 01 30` | nenhuma em 350 ms | Versão via comando; usar a characteristic `00000007` |
+
+### 4.4 Resumo de exemplos de pacotes completos
 
 | Ação | Bytes enviados |
 | --- | --- |
@@ -292,6 +311,79 @@ Envia `FE 01 <opcode alvo>` para pedir o estado atual de um opcode. A resposta c
 
 **Versão** (`00000007`): três bytes, formatados como `major.minor.patch`. Exemplo: `02 00 06` vira `2.0.6`.
 
+### 7.10 Auto-desligar (`0x14`)
+
+A consulta `FF 03 FE 01 14` foi a única dos opcodes explorados que respondeu no
+firmware 2.0.6:
+
+```
+FF 06 14 04 FF FF 00 00
+```
+
+O bloco tem quatro parâmetros:
+
+| Byte | Campo | Formato |
+| --- | --- | --- |
+| 0–1 | tempo configurado para desligar | `u16` little-endian, em minutos |
+| 2–3 | tempo decorrido | `u16` little-endian, em minutos |
+
+No ensaio, o tempo configurado veio como `FF FF` (65535). A documentação de
+terceiros usa o mesmo campo para o timer de auto-desligar, mas o significado de
+`0xFFFF` (desligado, "sem timer" ou valor máximo) não foi confirmado. O cliente
+não envia `0x14` e não altera essa configuração; o opcode está apenas
+documentado para não ser tratado como desconhecido em capturas futuras.
+
+### 7.11 Resultado de ANC Wear (`0x28`)
+
+O firmware 2.0.6 envia uma notificação com um único parâmetro depois de uma
+mudança de ANC:
+
+```
+FF 03 28 01 01
+```
+
+O byte `01` foi o único observado, inclusive ao alternar entre uma cena de ANC e
+"desligado". O nome do opcode no log do cliente Python é `ANC Wear/Result`, e a
+documentação de terceiros o chama de "ANC Result"; o significado do byte não é
+documentado pelo fabricante.
+
+Decisões de implementação:
+
+- o payload cru é preservado (`AncWearResult`), em vez de ser convertido em um
+  booleano adivinhado;
+- a notificação **não** substitui o estado de ANC (`0x17`), que continua sendo a
+  fonte autoritativa da cena e do nível;
+- payloads com mais de um byte são aceitos e mostrados com o tamanho, para que
+  uma captura futura possa ser interpretada sem perda;
+- o cliente responde a `0xFE 0x28` com silêncio, como registrado na seção 4.3.
+
+### 7.12 Bateria via comando (`0x2F`)
+
+Formato documentado por terceiros e aceito pelo parser:
+
+```
+[esquerda, direita, caixa]
+```
+
+Cada byte usa o mesmo formato da characteristic `00000008`: bit 7 indica
+carregamento e os bits 0–6 o nível. O firmware 2.0.6 não enviou essa notificação
+durante a captura e não respondeu à consulta `FF 03 FE 01 2F`; por isso a
+leitura direta continua sendo o caminho normal. O decodificador aceita 2 ou 3
+bytes; o terceiro byte (caixa) não é armazenado no estado atual.
+
+### 7.13 Versão via comando (`0x30`)
+
+Formato documentado por terceiros:
+
+- 3 bytes: `[major, minor, patch]`;
+- 6 bytes: `[Lmajor, Lminor, Lpatch, Rmajor, Rminor, Rpatch]`.
+
+O firmware 2.0.6 não enviou essa notificação e não respondeu à consulta
+`FF 03 FE 01 30`. O cliente decodifica os dois formatos, mas mantém apenas os
+três primeiros bytes em `DeviceState::firmware`; a versão do lado direito não é
+exposta separadamente. A leitura direta da characteristic `00000007` continua
+sendo a fonte normal.
+
 ---
 
 ## 8. Particularidades deste firmware
@@ -302,7 +394,29 @@ Estas são divergências em relação ao protocolo padrão da QCY, observadas no
 2. `0xFE` não responde para bateria nem versão. Essas informações vêm das leituras diretas.
 3. O fone fica silencioso em repouso e só envia notificações quando o estado muda.
 4. O byte `0x0B` do toque corresponde ao Modo ANC, e não a "rediscar".
-5. O opcode `0x28` (ANC Wear/Result) é recebido, mas ainda não foi decodificado.
+5. O opcode `0x28` (ANC Wear/Result) é recebido depois de mudanças de ANC; o payload é preservado (seção 7.11).
+6. Bateria e versão via comando (`0x2F`/`0x30`) não foram observadas; as consultas `0xFE` para esses opcodes ficam sem resposta.
+
+### 8.1 Matriz de compatibilidade por firmware
+
+A matriz registra o que foi efetivamente observado. Uma linha marcada como
+"não reproduzido" vem de relato de terceiros e não deve ser tratada como
+validação deste projeto.
+
+| Versão | Origem | `0x17` (ANC) | `0x28` | `0x2F`/`0x30` | Toque `0x0B` | Detecção de uso | Status |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 2.0.6 | captura local (Linux, 2026-11-22) | envia `00 00 00`; reporta `02 00 00` como desligado | notifica `FF 03 28 01 01` após mudança | não notifica; `0xFE` sem resposta | Modo ANC | reporta 4 bytes (`FF 06 2C 04 ...`) | Validado |
+| 2.0.4 | relato de terceiros (`qcy-control-macos`, não reproduzido) | exemplos usam `02 00 00` para desligado | não informado | não informado | não informado | não informado | Não validado |
+| outras | — | — | — | — | — | — | Desconhecido |
+
+Regras para atualizar a matriz:
+
+- uma linha nova só entra como "Validado" com captura ou teste registrado na
+  mesma entrega;
+- divergências de firmware devem ser descritas no comportamento do opcode, não
+  codificadas como identidade de um aparelho;
+- se um firmware novo mudar um formato, o parser deve continuar tolerante e
+  preservar o valor desconhecido.
 
 ---
 
@@ -325,9 +439,33 @@ Estas são divergências em relação ao protocolo padrão da QCY, observadas no
 - Só depois de validado, o mecanismo entra na ferramenta.
 - Divergências entre documentação de terceiros e os bytes observados são resolvidas a favor dos bytes.
 
+### 10.1 Registro de validação em Linux
+
+O roteiro está em
+[`tests/manual/validacao-hardware.md`](tests/manual/validacao-hardware.md).
+
+| Item | Registro |
+| --- | --- |
+| Data | 2026-11-22 |
+| Plataforma | Arch Linux, kernel `7.3.5-arch1-1` x86_64, Wayland/Hyprland, BlueZ 5.88 |
+| Firmware | 2.0.6 |
+| Conexão e sync | `device info`, `read battery`, `read firmware`, `read touch` OK |
+| Comandos | game, sleep, ANC (cenas, níveis, vento, adaptativo, transparência e desligado), balanço, volume, detecção de uso, rename e `send` OK |
+| Notificações | `0x28` observado após mudanças de ANC; `0x2F`/`0x30` não emitidos; `0x14` respondeu à consulta |
+| LDAC | valor aplicado, mas o comando terminou com "BLE link lost" (COR-11) |
+| GUI | `--offline --config <fictício>` abriu sem erro; a janela foi encerrada pelo timeout |
+
+O `device monitor` não encerrou sozinho quando o link foi derrubado por outro
+processo; ele ficou aguardando até o timeout do teste. Isso não impediu a
+validação dos opcodes.
+
 ---
 
 ## 11. Estado atual e próximos passos
+
+> Esta seção descreve o projeto Python de referência. O port Rust já possui
+> testes automatizados, validação em Linux e decodificação de `0x28`; a
+> reescrita desta seção para o estado atual do Rust está no Lote 7 (DOC-01).
 
 Pendências declaradas no README:
 

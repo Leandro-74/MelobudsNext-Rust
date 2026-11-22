@@ -47,6 +47,7 @@ Levantamento feito a partir da análise do repositório no commit `4028131`
 | COR-08 | Correção | P2 | `Packet::encode` entra em pânico em vez de retornar erro |
 | COR-09 | Correção | P2 | Escrita da configuração não é atômica |
 | COR-10 | Correção | P2 | GUI não tem parser de argumentos (`--help`, `--version`) |
+| COR-11 | Correção | P1 | LDAC retorna erro de link perdido em vez de reconectar |
 | REF-01 | Refatoração | P1 | Duplicação da orquestração entre CLI e GUI |
 | REF-02 | Refatoração | P2 | `gui.rs` monolítico (2.158 linhas) |
 | REF-03 | Refatoração | P1 | Falta abstração de transporte para testes |
@@ -60,6 +61,7 @@ Levantamento feito a partir da análise do repositório no commit `4028131`
 | MEL-02 | Melhoria | P2 | `ensure_powered` falha quando o estado é `Unknown` |
 | MEL-03 | Melhoria | P3 | Reconexão LDAC longa e sem progresso |
 | MEL-04 | Melhoria | P2 | Fallback do diretório `home` grava no diretório atual |
+| MEL-05 | Melhoria | P2 | Ecos de estado podem chegar depois da janela do comando |
 | TST-01 | Teste | P2 | Sem testes para helpers do CLI |
 | TST-02 | Teste | P1 | Fluxos de sessão sem dublê de transporte |
 | TST-03 | Teste | P2 | Sem testes para transições de estado da GUI |
@@ -82,6 +84,7 @@ Levantamento feito a partir da análise do repositório no commit `4028131`
 | PRO-02 | Protocolo/Hardware | P3 | Auto-desligar e opcodes desconhecidos não explorados |
 | PRO-03 | Protocolo/Hardware | P2 | Validação em Linux ainda não registrada |
 | PRO-04 | Protocolo/Hardware | P3 | Sem matriz de compatibilidade por firmware |
+| PRO-05 | Protocolo/Hardware | P3 | Quarto byte do `0x2C` varia e não está confirmado |
 
 ---
 
@@ -186,6 +189,24 @@ Levantamento feito a partir da análise do repositório no commit `4028131`
 - **Ação:** migrar para `clap` (já é dependência) com `--offline` e,
   opcionalmente, `--config`.
 - **Pronto quando:** `melobudsnext-gui --help` listar as flags suportadas.
+
+### COR-11 — LDAC retorna erro de link perdido em vez de reconectar
+- **Prioridade:** P1
+- **Onde:** `src/actions.rs` (`Controller::command_with`), `src/ble.rs`
+  (`BleSession::exchange`)
+- **Problema:** ao enviar `device ldac off` ou `on` no firmware 2.0.6, o fone
+  reinicia e derruba o link antes de o `exchange` terminar. O `exchange` chama
+  `ensure_link` depois da escrita e devolve `BLE link lost; connect again`; o
+  controlador só inicia a reconexão depois que `exchange` retorna `Ok`, então o
+  comando termina em erro mesmo tendo sido aplicado. O LDAC muda de estado
+  (confirmado por um `device info` seguinte), mas o CLI/GUI reportam falha e a
+  GUI pode descartar a sessão.
+- **Ação:** tratar a queda de link prevista nesse comando como sucesso da
+  escrita e seguir para a política de reconexão; cobrir com dublê de transporte
+  em que o `exchange` falha por link morto depois de registrar o pacote.
+- **Pronto quando:** `device ldac on/off` concluir a reconexão e exibir o estado
+  final, sem erro de link perdido.
+- **Descoberto em:** validação manual do Lote 6 (Linux, firmware 2.0.6).
 
 ---
 
@@ -319,6 +340,22 @@ Levantamento feito a partir da análise do repositório no commit `4028131`
 - **Ação:** usar o diretório de configuração da plataforma (ex.: `dirs`) ou
   retornar erro claro.
 - **Pronto quando:** execução sem `HOME` não gravar no cwd silenciosamente.
+
+### MEL-05 — Ecos de estado podem chegar depois da janela do comando
+- **Prioridade:** P2
+- **Onde:** `src/actions.rs` (`CommandOptions::listen`), `src/ble.rs`
+  (`BleSession::exchange`)
+- **Problema:** na validação do Lote 6, os ecos de `0x16` (balanço), `0x1D`
+  (volume), `0x2C` (detecção de uso) e `0x10` (modo sono) chegaram depois da
+  janela de espera do comando. O estado impresso ficou uma ação atrasado; o
+  `device info` seguinte mostrou o valor novo. O efeito é uma saída confusa,
+  não uma falha do fone.
+- **Ação:** medir o atraso real desses ecos e, se necessário, aumentar a janela
+  padrão, consultar o opcode depois do envio ou aplicar o valor enviado quando o
+  eco não chegar (sem mascarar mudanças externas).
+- **Pronto quando:** o estado exibido depois de um comando refletir o valor
+  aplicado, com teste que simule o eco atrasado.
+- **Descoberto em:** validação manual do Lote 6 (Linux, firmware 2.0.6).
 
 ---
 
@@ -538,6 +575,21 @@ Levantamento feito a partir da análise do repositório no commit `4028131`
   bytes).
 - **Ação:** manter uma matriz versão × comportamento conhecido.
 - **Pronto quando:** as divergências por firmware estiverem registradas.
+
+### PRO-05 — Quarto byte do `0x2C` varia e não está confirmado
+- **Prioridade:** P3
+- **Onde:** `src/protocol/commands.rs` (`WearDetection::from_params`),
+  `PROTOCOLO_MelobudsNext.md`
+- **Problema:** o firmware 2.0.6 reporta `0x2C` com 4 bytes. O quarto byte,
+  tratado como `tone`, apareceu como `00` no primeiro `device info`, mas assumiu
+  valores como `0xA0` e `0x5D` depois de alternar detecção/ANC, mesmo quando o
+  comando enviava `--tone 0`. O significado real (status, contador ou outro
+  campo) não foi confirmado, e o parser atual o expõe como configuração.
+- **Ação:** capturar novamente com o app oficial e comparar envio/report;
+  enquanto isso, evitar tratar o quarto byte como valor configurável.
+- **Pronto quando:** o campo estiver identificado ou marcado explicitamente como
+  desconhecido e preservado sem ser reenviado.
+- **Descoberto em:** validação manual do Lote 6 (Linux, firmware 2.0.6).
 
 ---
 
@@ -799,13 +851,14 @@ documentação.
 | 3 | `perf/sincronizacao-notificacoes` | 2 | 4 | Implementado (28963cd, 2026-11-22) |
 | 4 | `refactor/gui-modulos` | 1 | 3 | Implementado (0e73c22, 2026-11-22) |
 | 5 | `feat/gui-tempo-real` | 2, 3, 4 | 2 | Implementado (871a1bf, 2026-11-22) |
-| 6 | `feat/protocolo-hardware` | 0, 2 | 6 | Pendente |
+| 6 | `feat/protocolo-hardware` | 0, 2 | 6 | Implementado (323e95f, 2026-11-22) |
 | 7 | `chore/docs-release` | todos | 4 | Pendente |
 
-> Total: 44 itens nos lotes planejados, mais o TST-08 (registrado durante o
-> Lote 1 e ainda sem lote atribuído). O lote 4 pode ser executado em paralelo
-> ao 2/3 por não compartilhar arquivos centrais, mas o merge deve seguir a ordem
-> da tabela para manter a `main` sempre estável.
+> Total: 47 itens nos lotes planejados, mais o TST-08 (registrado durante o
+> Lote 1) e os itens descobertos no Lote 6 (COR-11, MEL-05 e PRO-05), todos
+> ainda sem lote atribuído. O lote 4 pode ser executado em paralelo ao 2/3 por
+> não compartilhar arquivos centrais, mas o merge deve seguir a ordem da tabela
+> para manter a `main` sempre estável.
 
 ### Regra de promoção para a `main`
 
@@ -1103,6 +1156,66 @@ Cada sessão adiciona aqui a subseção do lote concluído, antes do merge.
   - Recomendação para o Lote 6: usar a escuta ao vivo para capturar `0x28` e os
     opcodes desconhecidos com o app oficial, registrar firmware e plataforma, e
     evitar manter dois clientes conectados ao mesmo fone durante a captura.
+
+#### Lote 6 — Protocolo e validação com hardware
+
+- **Status:** Implementado
+- **Branch:** `feat/protocolo-hardware`
+- **Commits:** `e013dee` (PRO-01), `08dbe6d` (IMP-03), `87b67ba` (PRO-02),
+  `da07842` (PRO-04), `4964386` (TST-07), `323e95f` (PRO-03)
+- **Validação:** gate completo na branch e na `main` (`cargo fmt --check`,
+  `cargo clippy --all-targets -- -D warnings`, `cargo test --all-targets` com
+  130 testes da lib + 36 da GUI + 8 de integração, `cargo build --release`).
+  Manual: Arch Linux, kernel `7.3.5-arch1-1` x86_64, Wayland/Hyprland, BlueZ
+  5.88, firmware 2.0.6. CLI: scan, `device info`, leituras diretas, game/sleep,
+  todas as cenas de ANC e transparência, balanço, volume, detecção de uso,
+  rename (com restauração), `query`, `send`, `inspect` e `monitor`. GUI:
+  `--help`, `--version` e `--offline --config <fictício>` abriram sem erro. Não
+  foi possível executar o gesto físico de toque nem o app oficial; a captura foi
+  feita por um cliente BLE próprio na mesma máquina, sem outro cliente
+  conectado.
+- **Capturas:** `FF 03 28 01 01` (após mudanças de ANC), `FF 06 14 04 FF FF 00
+  00` (resposta de auto-desligar), `FF 03 FE 01 2F` e `FF 03 FE 01 30` sem
+  resposta, `FF 03 FE 01 06` e `FF 03 FE 01 29` sem resposta.
+- **Notas:**
+  - PRO-01 adicionou `AncWearResult`, que preserva o payload cru e expõe o
+    primeiro byte. A notificação `0x28` não substitui `DeviceState::anc`; o
+    `0xFE 0x28` não responde. O evento aparece como `ANC wear/result` no texto e
+    `anc_wear` no JSON. O significado do byte `01` não foi confirmado.
+  - IMP-03 implementou os decodificadores de `0x2F` (bateria L/R/caixa) e
+    `0x30` (versão de 3 ou 6 bytes; os três primeiros bytes alimentam o estado e
+    a versão direita é ignorada). No firmware 2.0.6 nenhum dos dois é notificado
+    e o `0xFE` não responde; as characteristics diretas continuam sendo a fonte
+    normal. Os testes usam payloads sintéticos, não uma captura real.
+  - PRO-02 documentou o `0x14` (auto-desligar) com a captura acima e a ausência
+    de resposta de `0x06`/`0x29`. Nenhum comando de auto-desligar foi
+    implementado; o `0x14` só é reconhecido na documentação.
+  - PRO-04 criou a matriz de compatibilidade: 2.0.6 validado; 2.0.4 listado como
+    relato de terceiros não reproduzido; demais versões desconhecidas. A matriz
+    também registra as regras para adicionar novos firmwares.
+  - TST-07 criou `tests/manual/validacao-hardware.md` com passos, resultados
+    esperados, teste de queda de link, GUI e regras para não versionar dados do
+    fone.
+  - PRO-03 registrou a execução em Linux no README e na seção 10.1 do protocolo.
+    Descobertas fora do escopo foram registradas em vez de corrigidas:
+    **COR-11** (LDAC aplica o valor, mas termina com "BLE link lost" antes de
+    reconectar), **MEL-05** (ecos de `0x10`, `0x16`, `0x1D` e `0x2C` podem chegar
+    depois da janela do comando) e **PRO-05** (o quarto byte de `0x2C` variou
+    entre `00`, `A0` e `5D`, mesmo com `--tone 0`).
+  - Armadilha: em uma das conexões o `0xFE 0x18` devolveu 32 bytes zero e o nome
+    ficou `null` no estado; um `device rename` para um valor fictício e a
+    restauração pelo nome do adaptador resolveram. O comportamento não foi
+    reproduzido de forma controlada e não foi transformado em item.
+  - O `device monitor` não encerrou sozinho quando outro processo derrubou o
+    link; ficou aguardando até o timeout do teste. A GUI já cobre a queda de link
+    pelo caminho próprio (Lote 1).
+  - Dívidas: COR-11, MEL-05 e PRO-05 seguem abertos; a validação de Windows não
+    foi executada; a captura de `0x2F`/`0x30` continua sem evidência real.
+  - Recomendação para o Lote 7: o Lote 7 (documentação/entrega) pode começar,
+    mas o release deve decidir o que fazer com o COR-11 antes de publicar, já
+    que ele afeta uma ação documentada. Atualizar a seção 11 do protocolo
+    (DOC-01), os pré-requisitos de BLE no Linux (DOC-03), as flags da GUI
+    (DOC-04) e o empacotamento (INF-05).
 
 ## Checklist de release (após o Lote 7)
 

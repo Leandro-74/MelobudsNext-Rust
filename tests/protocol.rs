@@ -125,6 +125,33 @@ fn applies_a_sequence_of_notifications_to_the_state() {
 }
 
 #[test]
+fn decodes_the_anc_wear_result_notification() {
+    let mut state = DeviceState::default();
+
+    let applied = state
+        .apply_bytes(&bytes("FF 03 28 01 01"))
+        .expect("ANC wear result");
+    assert_eq!(applied, 1);
+    assert_eq!(state.anc_wear.as_ref().map(|result| result.code()), Some(1));
+}
+
+#[test]
+fn decodes_battery_and_version_notifications() {
+    let mut state = DeviceState::default();
+
+    state
+        .apply_bytes(&bytes("FF 05 2F 03 D0 46 00"))
+        .expect("battery notification");
+    assert_eq!(state.battery.unwrap().left.percent(), 80);
+    assert!(state.battery.unwrap().left.charging());
+
+    state
+        .apply_bytes(&bytes("FF 08 30 06 02 00 06 02 00 07"))
+        .expect("version notification");
+    assert_eq!(state.firmware.unwrap().to_string(), "2.0.6");
+}
+
+#[test]
 fn parses_composite_notifications() {
     let mut state = DeviceState::default();
     let applied = state
