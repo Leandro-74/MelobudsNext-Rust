@@ -6,6 +6,7 @@
 
 pub mod actions;
 pub mod ble;
+pub mod cli;
 pub mod config;
 pub mod error;
 pub mod hex;

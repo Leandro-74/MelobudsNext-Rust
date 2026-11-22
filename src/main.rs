@@ -1,20 +1,21 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{anyhow, Context, Result};
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use futures::StreamExt;
 
 use melobudsnext::actions::{CommandObserver, CommandOptions, ConnectError, Controller};
 use melobudsnext::ble::{self, BleSession};
+use melobudsnext::cli::{build_anc_mode, mapping_from_bindings, wait_duration};
 use melobudsnext::config::Config;
 use melobudsnext::hex;
-use melobudsnext::protocol::anc::{AncMode, AncScene, TransparencyMode};
+use melobudsnext::protocol::anc::AncScene;
 use melobudsnext::protocol::commands::{self, NotificationVolume, WearDetection};
 use melobudsnext::protocol::framing::{self, Packet};
 use melobudsnext::protocol::opcode::Opcode;
 use melobudsnext::protocol::readings::{Battery, FirmwareVersion};
-use melobudsnext::protocol::touch::{TouchFunction, TouchKey, TouchMapping};
+use melobudsnext::protocol::touch::TouchMapping;
 use melobudsnext::DeviceState;
 
 #[derive(Debug, Parser)]
@@ -533,7 +534,12 @@ async fn run_device(
             write_touch(&bindings, address, config_path, scan_timeout).await
         }
         DeviceCommand::Anc(args) => {
-            let mode = build_anc_mode(&args.anc)?;
+            let mode = build_anc_mode(
+                args.anc.scene.map(AncScene::from),
+                args.anc.level,
+                args.anc.intensity,
+                args.anc.voice,
+            )?;
             run_action(
                 commands::anc(mode),
                 &args.action,
@@ -966,7 +972,12 @@ fn build_packet(command: BuildCommand) -> Result<Packet> {
         BuildCommand::Game { state } => commands::game_mode(state.enabled()),
         BuildCommand::Sleep { state } => commands::sleep_mode(state.enabled()),
         BuildCommand::Balance { value } => commands::channel_balance(value),
-        BuildCommand::Anc(args) => commands::anc(build_anc_mode(&args)?),
+        BuildCommand::Anc(args) => commands::anc(build_anc_mode(
+            args.scene.map(AncScene::from),
+            args.level,
+            args.intensity,
+            args.voice,
+        )?),
         BuildCommand::Rename { name } => commands::rename(&name)?,
         BuildCommand::NotificationVolume { level } => commands::notification_volume(level.into()),
         BuildCommand::WearDetection(args) => commands::wear_detection(WearDetection {
@@ -987,33 +998,6 @@ fn parse_opcode(value: &str) -> Result<Opcode> {
         .parse::<Opcode>()
         .map_err(anyhow::Error::msg)
         .with_context(|| format!("invalid query opcode {value:?}"))
-}
-
-fn build_anc_mode(args: &AncArgs) -> Result<AncMode> {
-    if args.intensity.is_some() || args.voice {
-        if args.scene.is_some() || args.level.is_some() {
-            bail!("--scene and --level are only valid in ANC mode");
-        }
-
-        let mode = match (args.voice, args.intensity) {
-            (true, None) => TransparencyMode::VoiceEnhancement,
-            (false, Some(intensity)) => TransparencyMode::Intensity(intensity),
-            (true, Some(_)) => bail!("--voice and --intensity cannot be used together"),
-            (false, None) => unreachable!("guarded by the outer condition"),
-        };
-
-        return Ok(AncMode::transparency(mode)?);
-    }
-
-    match args.scene {
-        Some(scene) => Ok(AncMode::anc(scene.into(), args.level)?),
-        None => {
-            if args.level.is_some() {
-                bail!("--level requires --scene");
-            }
-            Ok(AncMode::Off)
-        }
-    }
 }
 
 fn print_packet(packet: Packet) {
@@ -1104,27 +1088,6 @@ fn run_touch(command: TouchCommand) -> Result<()> {
     Ok(())
 }
 
-fn mapping_from_bindings(bindings: &[String]) -> Result<TouchMapping> {
-    let mut mapping = TouchMapping::new();
-
-    for binding in bindings {
-        let (key, function) = binding
-            .split_once('=')
-            .ok_or_else(|| anyhow!("invalid binding {binding:?}; expected KEY=FUNCTION"))?;
-        let key = key
-            .parse::<TouchKey>()
-            .map_err(anyhow::Error::msg)
-            .with_context(|| format!("invalid touch key {key:?}"))?;
-        let function = function
-            .parse::<TouchFunction>()
-            .map_err(anyhow::Error::msg)
-            .with_context(|| format!("invalid touch function {function:?}"))?;
-        mapping.set(key, function);
-    }
-
-    Ok(mapping)
-}
-
 fn decode_battery(bytes: &[u8]) -> Result<()> {
     let battery = Battery::parse(bytes)?;
     println!("Left:  {}", battery.left);
@@ -1166,11 +1129,4 @@ fn run_config(command: ConfigCommand, path: &Path) -> Result<()> {
 fn join_hex(parts: &[String]) -> Result<Vec<u8>> {
     let joined = parts.join(" ");
     hex::parse(&joined).with_context(|| format!("invalid hexadecimal input {joined:?}"))
-}
-
-fn wait_duration(seconds: f64) -> Result<Duration> {
-    if !(0.0..=3600.0).contains(&seconds) {
-        bail!("wait must be a number of seconds between 0 and 3600");
-    }
-    Ok(Duration::from_secs_f64(seconds))
 }
