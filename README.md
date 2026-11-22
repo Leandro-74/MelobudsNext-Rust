@@ -359,6 +359,17 @@ Execução registrada em **2026-11-22**:
 Para repetir a validação, siga o roteiro e registre plataforma, firmware e
 resultados sem dados sensíveis.
 
+## Validação no Windows
+
+- **Artefato:** `melobudsnext-gui.exe`, build cruzado com `cargo-xwin`, CRT
+  estático e ícone embutido.
+- **Execução:** o `.exe` foi aberto e conectado ao fone em um Windows real e a
+  interface respondeu normalmente, conforme validação manual do usuário em
+  **2026-11-22**. A versão do Windows e o firmware do fone não foram registrados.
+- **Escopo:** a validação cobriu a GUI. O CLI de Windows não foi executado nesta
+  release; ele pode ser compilado da fonte ou gerado pelo zip opcional
+  (`-WithCli` do script PowerShell).
+
 ## Configuração
 
 O caminho padrão é `~/.melobudsnext/config.json` (ou `%USERPROFILE%\.melobudsnext\config.json`).
