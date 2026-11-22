@@ -2523,4 +2523,234 @@ mod tests {
         assert_eq!(app.tab, super::Tab::Audio);
         assert_eq!(app.balance, 30);
     }
+
+    // -----------------------------------------------------------------------
+    // TST-03 — transições de estado da GUI
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn finish_applies_the_session_result_and_reloads_drafts() {
+        use super::ble_task::ActionResult;
+        use melobudsnext::protocol::anc::{AncMode, AncScene};
+        use melobudsnext::protocol::touch::{TouchFunction, TouchKey, TouchMapping};
+        use melobudsnext::DeviceState;
+
+        let mut state = DeviceState::default();
+        state.anc = AncMode::anc(AncScene::Indoor, Some(2)).unwrap();
+        state.channel_balance = 30;
+        state.game_mode = true;
+        state.name = Some("Meu Fone".to_string());
+        let mut touch = TouchMapping::new();
+        touch.set(TouchKey::LeftSingle, TouchFunction::PlayPause);
+        state.touch = Some(touch);
+
+        let mut app = online_app();
+        app.busy = Some("Sincronizando estado…".to_string());
+        app.error = Some("erro antigo".to_string());
+
+        let _ = app.finish(ActionResult {
+            state: state.clone(),
+            notice: Some("Estado atualizado a partir do fone.".to_string()),
+            connected: true,
+            address: Some("AA:BB:CC:DD:EE:FF".to_string()),
+            refresh_drafts: true,
+            ..ActionResult::default()
+        });
+
+        assert!(app.busy.is_none());
+        assert!(app.connected);
+        assert_eq!(app.state, state);
+        assert_eq!(app.address_input, "AA:BB:CC:DD:EE:FF");
+        assert_eq!(app.anc_choice, super::AncChoice::Scene(AncScene::Indoor));
+        assert_eq!(app.anc_level, 2);
+        assert_eq!(app.balance, 30);
+        assert_eq!(
+            app.touch_draft.get(TouchKey::LeftSingle),
+            TouchFunction::PlayPause
+        );
+        assert_eq!(app.rename_input, "Meu Fone");
+        assert!(app.error.is_none());
+        assert_eq!(
+            app.notice.as_deref(),
+            Some("Estado atualizado a partir do fone.")
+        );
+    }
+
+    #[test]
+    fn finish_reports_a_lost_link_and_keeps_drafts_without_refresh() {
+        use super::ble_task::ActionResult;
+        use melobudsnext::protocol::anc::AncScene;
+        use melobudsnext::DeviceState;
+
+        let mut app = online_app();
+        app.connected = true;
+        app.busy = Some("Desligando…".to_string());
+        app.anc_choice = super::AncChoice::Scene(AncScene::Wind);
+
+        let _ = app.finish(ActionResult {
+            state: DeviceState::default(),
+            error: Some("BLE link lost; connect again".to_string()),
+            connected: false,
+            refresh_drafts: false,
+            ..ActionResult::default()
+        });
+
+        assert!(!app.connected);
+        assert!(app.busy.is_none());
+        assert_eq!(app.error.as_deref(), Some("BLE link lost; connect again"));
+        assert!(app.notice.is_none());
+        // The action did not ask for a draft reload, so local edits survive.
+        assert_eq!(app.anc_choice, super::AncChoice::Scene(AncScene::Wind));
+    }
+
+    #[test]
+    fn load_drafts_maps_every_anc_mode() {
+        use super::AncChoice;
+        use melobudsnext::protocol::anc::{AncMode, AncScene, TransparencyMode};
+
+        let cases = [
+            (AncMode::Off, AncChoice::Off),
+            (
+                AncMode::anc(AncScene::Daily, Some(3)).unwrap(),
+                AncChoice::Scene(AncScene::Daily),
+            ),
+            (
+                AncMode::transparency(TransparencyMode::Intensity(4)).unwrap(),
+                AncChoice::Transparency,
+            ),
+            (
+                AncMode::transparency(TransparencyMode::VoiceEnhancement).unwrap(),
+                AncChoice::Transparency,
+            ),
+            (
+                AncMode::Unknown([0x02, 0x07, 0x01]),
+                AncChoice::Unknown([0x02, 0x07, 0x01]),
+            ),
+        ];
+
+        for (mode, expected) in cases {
+            let mut app = online_app();
+            app.state.anc = mode;
+            app.load_drafts();
+            assert_eq!(app.anc_choice, expected, "mode {mode}");
+        }
+
+        let mut app = online_app();
+        app.state.anc = AncMode::transparency(TransparencyMode::Intensity(5)).unwrap();
+        app.load_drafts();
+        assert!(!app.transparency_voice);
+        assert_eq!(app.transparency_intensity, 5);
+
+        app.state.anc = AncMode::transparency(TransparencyMode::VoiceEnhancement).unwrap();
+        app.load_drafts();
+        assert!(app.transparency_voice);
+
+        app.state.anc = AncMode::anc(AncScene::Indoor, Some(1)).unwrap();
+        app.load_drafts();
+        assert_eq!(app.anc_level, 1);
+    }
+
+    #[test]
+    fn load_drafts_reads_volume_touch_wear_and_name() {
+        use melobudsnext::protocol::commands::{NotificationVolume, WearDetection};
+        use melobudsnext::protocol::touch::{TouchFunction, TouchKey, TouchMapping};
+
+        let mut app = online_app();
+        let mut touch = TouchMapping::new();
+        touch.set(TouchKey::RightDouble, TouchFunction::VolumeUp);
+        app.state.touch = Some(touch.clone());
+        app.state.notification_volume = Some(0x08);
+        app.state.channel_balance = 20;
+        app.state.wear_detection = Some(WearDetection {
+            enabled: true,
+            music_index: 2,
+            keep_anc: true,
+            tone: 3,
+        });
+        app.state.name = Some("Meu Fone".to_string());
+
+        app.load_drafts();
+
+        assert_eq!(app.balance, 20);
+        assert_eq!(
+            app.volume,
+            Some(super::VolumeOption(NotificationVolume::High))
+        );
+        assert_eq!(app.touch_draft, touch);
+        assert!(app.wear_enabled);
+        assert!(app.wear_keep_anc);
+        assert_eq!(app.wear_music, "2");
+        assert_eq!(app.wear_tone, "3");
+        assert_eq!(app.rename_input, "Meu Fone");
+    }
+
+    #[test]
+    fn load_drafts_uses_defaults_when_the_state_is_missing() {
+        let mut app = online_app();
+        app.state.touch = None;
+        app.state.notification_volume = None;
+        app.state.wear_detection = None;
+        app.state.name = None;
+
+        app.load_drafts();
+
+        assert_eq!(app.volume, None);
+        assert_eq!(app.touch_draft, Default::default());
+        assert!(!app.wear_enabled);
+        assert!(!app.wear_keep_anc);
+        assert_eq!(app.wear_music, "1");
+        assert_eq!(app.wear_tone, "0");
+        assert!(app.rename_input.is_empty());
+    }
+
+    #[test]
+    fn active_anc_mode_validates_the_draft() {
+        use super::AncChoice;
+        use melobudsnext::protocol::anc::{AncMode, AncScene, TransparencyMode};
+
+        let mut app = online_app();
+
+        app.anc_choice = AncChoice::Off;
+        assert_eq!(app.active_anc_mode(), Ok(AncMode::Off));
+
+        app.anc_choice = AncChoice::Scene(AncScene::Noise);
+        app.anc_level = 3;
+        assert_eq!(
+            app.active_anc_mode(),
+            Ok(AncMode::anc(AncScene::Noise, Some(3)).unwrap())
+        );
+
+        app.anc_level = 0;
+        assert!(app.active_anc_mode().is_err());
+
+        app.anc_choice = AncChoice::Scene(AncScene::Wind);
+        assert_eq!(
+            app.active_anc_mode(),
+            Ok(AncMode::anc(AncScene::Wind, None).unwrap())
+        );
+
+        app.anc_choice = AncChoice::Transparency;
+        app.transparency_voice = false;
+        app.transparency_intensity = 6;
+        assert_eq!(
+            app.active_anc_mode(),
+            Ok(AncMode::transparency(TransparencyMode::Intensity(6)).unwrap())
+        );
+
+        app.transparency_intensity = 7;
+        assert!(app.active_anc_mode().is_err());
+    }
+
+    #[test]
+    fn offline_build_skips_the_automatic_connection() {
+        let config = Config::default().with_mac("AA:BB:CC:DD:EE:FF");
+
+        let (online, _) = super::App::build(config.clone(), None, false);
+        assert_eq!(online.busy.as_deref(), Some("Conectando ao fone…"));
+        assert_eq!(online.address_input, "AA:BB:CC:DD:EE:FF");
+
+        let (offline, _) = super::App::build(config, None, true);
+        assert!(offline.busy.is_none());
+        assert_eq!(offline.address_input, "AA:BB:CC:DD:EE:FF");
+    }
 }
